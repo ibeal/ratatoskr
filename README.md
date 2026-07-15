@@ -21,13 +21,20 @@ specific agent products.
 
 Ratatoskr resolves context in layers:
 
-1. Global root: `~/.config/ratatoskr`
-2. Local root: the nearest `.ratatoskr/` found by walking upward from the current directory
+1. Global root: `~/.config/rata`
+2. Local scopes: every ancestor `.rata/` found by walking upward from the current directory
+
+Global root precedence is:
+
+1. `--global-root <path>`
+2. `RATA_ROOT`
+3. `~/.config/.rata/.rata.toml` with `root = "/path/to/context-root"`
+4. `~/.config/rata`
 
 Each root contains:
 
 ```text
-ratatoskr.toml
+.rata.toml
 context/
 stores/
 ```
@@ -35,39 +42,77 @@ stores/
 The config file declares:
 
 - ordered context file includes
+- additive profiles that include additional context files
 - named datastore directories
 
-Local scope overrides global scope by store name because project-specific state should win over
-portable defaults.
+Scopes compose in order: global first, then outer local scopes, then inner local scopes. Store names
+override by last writer, so more specific scopes win.
+
+Profiles compose across scopes too. If global, `ap/`, and project scopes all define `build`, then
+`rata resolve --profile build` activates all of them in scope order.
 
 ## Current commands
 
 ```text
 rata init global
 rata init local
-rata resolve
+rata resolve summary
+rata resolve stores
+rata resolve --global-root ~/src/agent-context
+rata resolve stores --format json
 rata resolve --format json
+rata pack
+rata pack --profile build
+rata pack --format json
+rata docs agent
 ```
+
+You can also keep a machine-local pointer file at `~/.config/.rata/.rata.toml`:
+
+```toml
+root = "/Users/ian/src/agent-context"
+```
+
+That lets you keep your portable global context in a cloned repo without requiring it to live under
+`~/.config/rata`.
+
+A nested layout like this is supported:
+
+```text
+~/src/
+  ap/
+    .rata/
+  ap/service-a/
+    .rata/
+```
+
+Running `rata resolve` inside `service-a` will compose:
+
+1. global scope
+2. `~/src/ap/.rata`
+3. `~/src/ap/service-a/.rata`
 
 ## Example layout
 
 ```text
-~/.config/ratatoskr/
-  ratatoskr.toml
+~/.config/rata/
+  .rata.toml
   context/
     agents.md
     preferences.md
-    workflow.md
+    sdlc.md
   stores/
     decisions/
     memory/
     tickets/
 
-<repo>/.ratatoskr/
-  ratatoskr.toml
+<repo>/.rata/
+  .rata.toml
   context/
     project.md
     tools.md
+    standards.md
+    review-checklist.md
   stores/
     decisions/
     memory/
@@ -85,6 +130,14 @@ include = [
   "context/tools.md",
 ]
 
+[profiles.build]
+description = "Project-specific coding context"
+include = ["context/standards.md"]
+
+[profiles.review]
+description = "Project-specific review guidance"
+include = ["context/review-checklist.md"]
+
 [stores]
 decisions = "stores/decisions"
 memory = "stores/memory"
@@ -94,6 +147,4 @@ tickets = "stores/tickets"
 ## Next steps
 
 - add `show stack` and `show context`
-- add `pack` for bundling resolved context into markdown or JSON payloads
-- add include/exclude profiles for different agent workflows
 - add store helpers for recency-based reads and explicit named roots

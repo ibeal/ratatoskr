@@ -9,9 +9,11 @@ pub enum RatatoskrError {
     Io(io::Error),
     ReadConfig(PathBuf, io::Error),
     ParseConfig(PathBuf, toml::de::Error),
+    ReadContextFile(PathBuf, io::Error),
     SerializeJson(serde_json::Error),
     InvalidRoot(String),
     AlreadyExists(PathBuf),
+    UnknownProfiles(Vec<String>),
 }
 
 impl Display for RatatoskrError {
@@ -24,10 +26,20 @@ impl Display for RatatoskrError {
             Self::ParseConfig(path, source) => {
                 write!(f, "failed to parse config {}: {source}", path.display())
             }
+            Self::ReadContextFile(path, source) => {
+                write!(
+                    f,
+                    "failed to read context file {}: {source}",
+                    path.display()
+                )
+            }
             Self::SerializeJson(source) => write!(f, "failed to serialize JSON: {source}"),
             Self::InvalidRoot(message) => write!(f, "{message}"),
             Self::AlreadyExists(path) => {
                 write!(f, "refusing to overwrite existing file {}", path.display())
+            }
+            Self::UnknownProfiles(profiles) => {
+                write!(f, "unknown profiles: {}", profiles.join(", "))
             }
         }
     }

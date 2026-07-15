@@ -1,14 +1,16 @@
 mod cli;
 mod config;
+mod docs;
 mod errors;
 mod init;
+mod pack;
 mod resolve;
 
 use std::path::PathBuf;
 
 use clap::Parser;
 
-use crate::cli::{Cli, Commands, InitScope, OutputFormat};
+use crate::cli::{Cli, Commands, InitScope, OutputFormat, ResolveTarget};
 use crate::errors::Result;
 
 fn main() {
@@ -27,13 +29,51 @@ fn run() -> Result<()> {
             init::scaffold(scope, &root)?;
             println!("initialized {} root at {}", scope.label(), root.display());
         }
-        Commands::Resolve { cwd, format } => {
+        Commands::Resolve {
+            target,
+            cwd,
+            global_root,
+            profiles,
+            format,
+        } => {
             let cwd = cwd.unwrap_or(std::env::current_dir()?);
-            let manifest = resolve::resolve_manifest(&cwd)?;
-            match format {
-                OutputFormat::Text => print!("{manifest}"),
-                OutputFormat::Json => println!("{}", serde_json::to_string_pretty(&manifest)?),
+            match target {
+                ResolveTarget::Summary => {
+                    let manifest =
+                        resolve::resolve_manifest(&cwd, global_root.as_deref(), &profiles)?;
+                    match format {
+                        OutputFormat::Text => print!("{manifest}"),
+                        OutputFormat::Json => {
+                            println!("{}", serde_json::to_string_pretty(&manifest)?)
+                        }
+                    }
+                }
+                ResolveTarget::Stores => {
+                    let stores = resolve::resolve_stores(&cwd, global_root.as_deref(), &profiles)?;
+                    match format {
+                        OutputFormat::Text => print!("{stores}"),
+                        OutputFormat::Json => {
+                            println!("{}", serde_json::to_string_pretty(&stores)?)
+                        }
+                    }
+                }
             }
+        }
+        Commands::Pack {
+            cwd,
+            global_root,
+            profiles,
+            format,
+        } => {
+            let cwd = cwd.unwrap_or(std::env::current_dir()?);
+            let bundle = pack::build_bundle(&cwd, global_root.as_deref(), &profiles)?;
+            match format {
+                OutputFormat::Text => print!("{bundle}"),
+                OutputFormat::Json => println!("{}", serde_json::to_string_pretty(&bundle)?),
+            }
+        }
+        Commands::Docs { topic } => {
+            print!("{}", docs::render(topic));
         }
     }
 
@@ -45,6 +85,6 @@ fn default_root_for_init(scope: InitScope) -> PathBuf {
         InitScope::Global => config::default_global_root(),
         InitScope::Local => std::env::current_dir()
             .unwrap_or_else(|_| PathBuf::from("."))
-            .join(".ratatoskr"),
+            .join(".rata"),
     }
 }

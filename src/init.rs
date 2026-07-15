@@ -41,8 +41,15 @@ fn config_template(scope: InitScope) -> &'static str {
 include = [
   "context/agents.md",
   "context/preferences.md",
-  "context/workflow.md",
 ]
+
+[profiles.build]
+description = "Additional context for building software"
+include = ["context/sdlc.md"]
+
+[profiles.review]
+description = "Additional context for reviewing software changes"
+include = ["context/sdlc.md"]
 
 [stores]
 decisions = "stores/decisions"
@@ -58,6 +65,14 @@ include = [
   "context/project.md",
   "context/tools.md",
 ]
+
+[profiles.build]
+description = "Project-specific coding context"
+include = ["context/standards.md"]
+
+[profiles.review]
+description = "Project-specific review guidance"
+include = ["context/review-checklist.md"]
 
 [stores]
 decisions = "stores/decisions"
@@ -80,8 +95,8 @@ fn context_templates(scope: InitScope) -> Vec<(&'static str, &'static str)> {
                 "# Global preferences\n\nResponse and workflow preferences that travel between projects.\n",
             ),
             (
-                "context/workflow.md",
-                "# Global workflow\n\nCross-project methodology, review expectations, and safety rules.\n",
+                "context/sdlc.md",
+                "# Software delivery workflow\n\nGuidance that should only be loaded for software build and review workflows.\n",
             ),
         ],
         InitScope::Local => vec![
@@ -92,6 +107,14 @@ fn context_templates(scope: InitScope) -> Vec<(&'static str, &'static str)> {
             (
                 "context/tools.md",
                 "# Project tools\n\nLanguages, package managers, linters, and runtime details for this repo.\n",
+            ),
+            (
+                "context/standards.md",
+                "# Project standards\n\nCoding conventions and implementation guidance specific to this repo.\n",
+            ),
+            (
+                "context/review-checklist.md",
+                "# Project review checklist\n\nProject-specific checks to apply during code review.\n",
             ),
         ],
     }

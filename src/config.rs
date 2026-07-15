@@ -6,8 +6,10 @@ use serde::{Deserialize, Serialize};
 
 use crate::errors::{RatatoskrError, Result};
 
-pub const LOCAL_DIR: &str = ".ratatoskr";
-pub const CONFIG_FILE: &str = "ratatoskr.toml";
+pub const LOCAL_DIR: &str = ".rata";
+pub const CONFIG_FILE: &str = ".rata.toml";
+pub const GLOBAL_ROOT_ENV: &str = "RATA_ROOT";
+pub const GLOBAL_ROOT_POINTER_DIR: &str = ".rata";
 
 #[derive(Debug, Clone, Default, Deserialize, Serialize)]
 pub struct ScopeConfig {
@@ -16,6 +18,8 @@ pub struct ScopeConfig {
     #[serde(default)]
     pub context: ContextConfig,
     #[serde(default)]
+    pub profiles: BTreeMap<String, ProfileConfig>,
+    #[serde(default)]
     pub stores: BTreeMap<String, String>,
 }
 
@@ -23,6 +27,19 @@ pub struct ScopeConfig {
 pub struct ContextConfig {
     #[serde(default)]
     pub include: Vec<String>,
+}
+
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
+pub struct ProfileConfig {
+    #[serde(default)]
+    pub description: Option<String>,
+    #[serde(default)]
+    pub include: Vec<String>,
+}
+
+#[derive(Debug, Clone, Default, Deserialize)]
+struct GlobalRootPointerConfig {
+    root: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -48,29 +65,51 @@ impl ScopeKind {
 }
 
 pub fn default_global_root() -> PathBuf {
-    home_dir().join(".config").join("ratatoskr")
+    home_dir().join(".config").join("rata")
 }
 
-pub fn discover_local_root(start: &Path) -> Option<PathBuf> {
-    for dir in start.ancestors() {
-        let candidate = dir.join(LOCAL_DIR);
-        if candidate.is_dir() {
-            return Some(candidate);
+pub fn resolve_global_root(cli_override: Option<&Path>) -> PathBuf {
+    if let Some(path) = cli_override {
+        return path.to_path_buf();
+    }
+
+    if let Some(path) = std::env::var_os(GLOBAL_ROOT_ENV) {
+        return PathBuf::from(path);
+    }
+
+    if let Some(path) = load_global_root_pointer() {
+        return path;
+    }
+
+    default_global_root()
+}
+
+pub fn discover_local_roots(start: &Path) -> Vec<PathBuf> {
+    let mut roots = start
+        .ancestors()
+        .filter_map(|dir| {
+            let candidate = dir.join(LOCAL_DIR);
+            candidate.is_dir().then_some(candidate)
+        })
+        .collect::<Vec<_>>();
+    roots.reverse();
+    roots
+}
+
+pub fn load_global_scope(root_override: Option<&Path>) -> Result<Option<LoadedScope>> {
+    load_scope(resolve_global_root(root_override), ScopeKind::Global)
+}
+
+pub fn load_local_scopes(start: &Path) -> Result<Vec<LoadedScope>> {
+    let mut scopes = Vec::new();
+
+    for root in discover_local_roots(start) {
+        if let Some(scope) = load_scope(root, ScopeKind::Local)? {
+            scopes.push(scope);
         }
     }
 
-    None
-}
-
-pub fn load_global_scope() -> Result<Option<LoadedScope>> {
-    load_scope(default_global_root(), ScopeKind::Global)
-}
-
-pub fn load_local_scope(start: &Path) -> Result<Option<LoadedScope>> {
-    match discover_local_root(start) {
-        Some(root) => load_scope(root, ScopeKind::Local),
-        None => Ok(None),
-    }
+    Ok(scopes)
 }
 
 pub fn load_scope(root: PathBuf, kind: ScopeKind) -> Result<Option<LoadedScope>> {
@@ -104,6 +143,30 @@ pub fn home_dir() -> PathBuf {
     std::env::var_os("HOME")
         .map(PathBuf::from)
         .unwrap_or_else(|| PathBuf::from("."))
+}
+
+pub fn global_root_pointer_path() -> PathBuf {
+    home_dir()
+        .join(".config")
+        .join(GLOBAL_ROOT_POINTER_DIR)
+        .join(CONFIG_FILE)
+}
+
+fn load_global_root_pointer() -> Option<PathBuf> {
+    let pointer_path = global_root_pointer_path();
+    if !pointer_path.is_file() {
+        return None;
+    }
+
+    let raw = fs::read_to_string(&pointer_path).ok()?;
+    let config = toml::from_str::<GlobalRootPointerConfig>(&raw).ok()?;
+    let root = config.root?;
+    let root = root.trim();
+    if root.is_empty() {
+        return None;
+    }
+
+    Some(PathBuf::from(root))
 }
 
 fn default_version() -> u32 {

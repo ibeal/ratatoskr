@@ -22,12 +22,41 @@ pub enum Commands {
     },
     /// Resolve the active global/local context stack.
     Resolve {
+        /// Choose which part of the resolved state to return.
+        #[arg(value_enum, default_value_t = ResolveTarget::Summary)]
+        target: ResolveTarget,
         /// Resolve relative to this directory instead of the current working directory.
         #[arg(long)]
         cwd: Option<PathBuf>,
+        /// Override the global rata root for this invocation.
+        #[arg(long)]
+        global_root: Option<PathBuf>,
+        /// Apply one or more additive context profiles in the order provided.
+        #[arg(long = "profile")]
+        profiles: Vec<String>,
         /// Choose human-readable or JSON output.
         #[arg(long, value_enum, default_value_t = OutputFormat::Text)]
         format: OutputFormat,
+    },
+    /// Read the resolved context files and emit a deterministic context bundle.
+    Pack {
+        /// Resolve relative to this directory instead of the current working directory.
+        #[arg(long)]
+        cwd: Option<PathBuf>,
+        /// Override the global rata root for this invocation.
+        #[arg(long)]
+        global_root: Option<PathBuf>,
+        /// Apply one or more additive context profiles in the order provided.
+        #[arg(long = "profile")]
+        profiles: Vec<String>,
+        /// Choose human-readable or JSON output.
+        #[arg(long, value_enum, default_value_t = OutputFormat::Text)]
+        format: OutputFormat,
+    },
+    /// Print built-in documentation for common rata workflows.
+    Docs {
+        #[arg(value_enum)]
+        topic: DocsTopic,
     },
 }
 
@@ -51,4 +80,16 @@ pub enum OutputFormat {
     #[default]
     Text,
     Json,
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, ValueEnum)]
+pub enum ResolveTarget {
+    #[default]
+    Summary,
+    Stores,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, ValueEnum)]
+pub enum DocsTopic {
+    Agent,
 }
