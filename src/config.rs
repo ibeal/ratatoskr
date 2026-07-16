@@ -296,12 +296,24 @@ fn follow_global_root_jump(initial_root: PathBuf) -> PathBuf {
 }
 
 fn resolve_path_setting(root: &Path, value: &str) -> PathBuf {
-    let path = PathBuf::from(value);
+    let path = expand_home_path(value);
     if path.is_absolute() {
         path
     } else {
         root.join(path)
     }
+}
+
+fn expand_home_path(value: &str) -> PathBuf {
+    if value == "~" {
+        return home_dir();
+    }
+
+    if let Some(suffix) = value.strip_prefix("~/") {
+        return home_dir().join(suffix);
+    }
+
+    PathBuf::from(value)
 }
 
 fn prepare_remote_file(
@@ -460,4 +472,54 @@ fn should_fetch_remote(path: &Path, ttl: i64) -> bool {
     };
 
     age.as_secs() >= ttl as u64
+}
+
+#[cfg(test)]
+mod tests {
+    use std::fs;
+    use std::path::PathBuf;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    use super::{expand_home_path, home_dir, load_local_scopes, resolve_global_root};
+
+    #[test]
+    fn global_root_setting_expands_home_directory() {
+        let root = temp_dir("config-global-root");
+        let config_root = root.join("config-root");
+        fs::create_dir_all(&config_root).unwrap();
+        fs::write(
+            config_root.join(".rata.toml"),
+            "version = 1\n\n[settings]\nglobal_root = \"~/dotfiles/agents/\"\n",
+        )
+        .unwrap();
+
+        let locals = load_local_scopes(&root).unwrap();
+        let resolved = resolve_global_root(Some(&config_root), &locals);
+
+        assert_eq!(resolved, home_dir().join("dotfiles/agents/"));
+
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn expand_home_path_handles_tilde_prefix() {
+        assert_eq!(expand_home_path("~"), home_dir());
+        assert_eq!(
+            expand_home_path("~/dotfiles/agents/"),
+            home_dir().join("dotfiles/agents/")
+        );
+    }
+
+    fn temp_dir(label: &str) -> PathBuf {
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let path = std::env::temp_dir().join(format!("rata-{label}-{unique}"));
+        if path.exists() {
+            fs::remove_dir_all(&path).unwrap();
+        }
+        fs::create_dir_all(&path).unwrap();
+        path
+    }
 }

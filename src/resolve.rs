@@ -14,6 +14,7 @@ pub struct ResolvedManifest {
     pub global_root: Option<PathBuf>,
     pub local_root: Option<PathBuf>,
     pub local_roots: Vec<PathBuf>,
+    #[serde(skip_serializing)]
     pub settings: config::EffectiveSettings,
     pub selected_profiles: Vec<String>,
     pub available_profiles: Vec<AvailableProfile>,
@@ -22,7 +23,6 @@ pub struct ResolvedManifest {
     pub context_entries: Vec<ResolvedContextEntry>,
     pub stores: BTreeMap<String, PathBuf>,
     pub remote_files: Vec<RemoteFileStatus>,
-    pub missing_context_files: Vec<MissingContextFile>,
 }
 
 #[derive(Debug, Serialize)]
@@ -31,7 +31,6 @@ pub struct ResolvedStores {
     pub global_root: Option<PathBuf>,
     pub local_root: Option<PathBuf>,
     pub local_roots: Vec<PathBuf>,
-    pub settings: config::EffectiveSettings,
     pub stores: BTreeMap<String, PathBuf>,
 }
 
@@ -74,6 +73,12 @@ pub struct MissingContextFile {
     pub source: ContextSource,
 }
 
+#[derive(Debug)]
+pub struct ManifestInspection {
+    pub manifest: ResolvedManifest,
+    pub missing_context_files: Vec<MissingContextFile>,
+}
+
 #[derive(Clone, Debug, Serialize)]
 pub struct ResolvedContextEntry {
     pub path: PathBuf,
@@ -94,6 +99,14 @@ pub fn resolve_manifest(
     global_root_override: Option<&Path>,
     selected_profiles: &[String],
 ) -> Result<ResolvedManifest> {
+    Ok(inspect_manifest(cwd, global_root_override, selected_profiles)?.manifest)
+}
+
+pub fn inspect_manifest(
+    cwd: &Path,
+    global_root_override: Option<&Path>,
+    selected_profiles: &[String],
+) -> Result<ManifestInspection> {
     let locals = config::load_local_scopes(cwd)?;
     let global = config::load_global_scope(global_root_override, &locals)?;
     let settings =
@@ -177,25 +190,43 @@ pub fn resolve_manifest(
         })
         .collect();
 
-    Ok(ResolvedManifest {
-        cwd: cwd.to_path_buf(),
-        global_root: global.map(|scope| scope.root),
-        local_root: locals.last().map(|scope| scope.root.clone()),
-        local_roots: locals.iter().map(|scope| scope.root.clone()).collect(),
-        settings,
-        selected_profiles: selected_profiles.to_vec(),
-        available_profiles: available_profiles
-            .into_iter()
-            .map(|(name, scopes)| AvailableProfile {
-                name,
-                scopes: scopes.into_iter().collect(),
-            })
-            .collect(),
-        scopes,
-        context_files,
-        context_entries,
-        stores,
-        remote_files,
+    if settings.allow_missing {
+        context_entries.retain(|entry| !is_missing_file(&entry.path));
+        context_files.retain(|path| !is_missing_file(path));
+        for scope in &mut scopes {
+            scope.base_context_files.retain(|path| !is_missing_file(path));
+            scope.context_files.retain(|path| !is_missing_file(path));
+            scope.context_entries.retain(|entry| !is_missing_file(&entry.path));
+            for profile in &mut scope.active_profiles {
+                profile.context_files.retain(|path| !is_missing_file(path));
+            }
+            for profile in &mut scope.available_profiles {
+                profile.context_files.retain(|path| !is_missing_file(path));
+            }
+        }
+    }
+
+    Ok(ManifestInspection {
+        manifest: ResolvedManifest {
+            cwd: cwd.to_path_buf(),
+            global_root: Some(settings.global_root.clone()),
+            local_root: locals.last().map(|scope| scope.root.clone()),
+            local_roots: locals.iter().map(|scope| scope.root.clone()).collect(),
+            settings,
+            selected_profiles: selected_profiles.to_vec(),
+            available_profiles: available_profiles
+                .into_iter()
+                .map(|(name, scopes)| AvailableProfile {
+                    name,
+                    scopes: scopes.into_iter().collect(),
+                })
+                .collect(),
+            scopes,
+            context_files,
+            context_entries,
+            stores,
+            remote_files,
+        },
         missing_context_files,
     })
 }
@@ -299,27 +330,6 @@ impl Display for ResolvedManifest {
             display_path(self.global_root.as_ref())
         )?;
         writeln!(f, "local_root: {}", display_path(self.local_root.as_ref()))?;
-        writeln!(f, "allow_missing: {}", self.settings.allow_missing)?;
-        writeln!(
-            f,
-            "effective_global_root: {}",
-            self.settings.global_root.display()
-        )?;
-        writeln!(f, "settings_layers:")?;
-        if self.settings.layers.is_empty() {
-            writeln!(f, "  - <none>")?;
-        } else {
-            for layer in &self.settings.layers {
-                writeln!(
-                    f,
-                    "  - {} {} allow_missing={} global_root={}",
-                    layer.scope_kind,
-                    layer.scope_root.display(),
-                    display_optional_bool(layer.allow_missing),
-                    display_optional_path(layer.global_root.as_ref()),
-                )?;
-            }
-        }
         writeln!(f, "local_roots:")?;
         if self.local_roots.is_empty() {
             writeln!(f, "  - <none>")?;
@@ -370,15 +380,6 @@ impl Display for ResolvedManifest {
                 )?;
             }
         }
-        writeln!(f, "missing_context_files:")?;
-        if self.missing_context_files.is_empty() {
-            writeln!(f, "  - <none>")?;
-        } else {
-            for missing in &self.missing_context_files {
-                writeln!(f, "  - {}", missing.path.display())?;
-            }
-        }
-
         Ok(())
     }
 }
@@ -392,27 +393,6 @@ impl Display for ResolvedStores {
             display_path(self.global_root.as_ref())
         )?;
         writeln!(f, "local_root: {}", display_path(self.local_root.as_ref()))?;
-        writeln!(f, "allow_missing: {}", self.settings.allow_missing)?;
-        writeln!(
-            f,
-            "effective_global_root: {}",
-            self.settings.global_root.display()
-        )?;
-        writeln!(f, "settings_layers:")?;
-        if self.settings.layers.is_empty() {
-            writeln!(f, "  - <none>")?;
-        } else {
-            for layer in &self.settings.layers {
-                writeln!(
-                    f,
-                    "  - {} {} allow_missing={} global_root={}",
-                    layer.scope_kind,
-                    layer.scope_root.display(),
-                    display_optional_bool(layer.allow_missing),
-                    display_optional_path(layer.global_root.as_ref()),
-                )?;
-            }
-        }
         writeln!(f, "local_roots:")?;
         if self.local_roots.is_empty() {
             writeln!(f, "  - <none>")?;
@@ -441,7 +421,6 @@ pub fn resolve_stores(
         global_root: manifest.global_root,
         local_root: manifest.local_root,
         local_roots: manifest.local_roots,
-        settings: manifest.settings,
         stores: manifest.stores,
     })
 }
@@ -450,20 +429,6 @@ fn display_path(path: Option<&PathBuf>) -> String {
     match path {
         Some(path) => path.display().to_string(),
         None => "<none>".to_string(),
-    }
-}
-
-fn display_optional_path(path: Option<&PathBuf>) -> String {
-    match path {
-        Some(path) => path.display().to_string(),
-        None => "<unset>".to_string(),
-    }
-}
-
-fn display_optional_bool(value: Option<bool>) -> String {
-    match value {
-        Some(value) => value.to_string(),
-        None => "<unset>".to_string(),
     }
 }
 
@@ -492,10 +457,10 @@ mod tests {
     use std::path::{Path, PathBuf};
     use std::time::{SystemTime, UNIX_EPOCH};
 
-    use super::resolve_manifest;
+    use super::{inspect_manifest, resolve_manifest};
 
     #[test]
-    fn resolve_manifest_reports_settings_layers_and_missing_files() {
+    fn resolve_manifest_filters_missing_files_when_allowed() {
         let root = temp_dir("resolve-manifest");
         let global_root = root.join("global");
         let project_root = root.join("workspace").join("project");
@@ -535,14 +500,22 @@ allow_missing = true
         fs::write(local_scope.join("context/local.md"), "local").unwrap();
 
         let manifest = resolve_manifest(&project_root, Some(&global_root), &[]).unwrap();
+        let inspection = inspect_manifest(&project_root, Some(&global_root), &[]).unwrap();
 
         assert!(manifest.settings.allow_missing);
         assert_eq!(manifest.settings.layers.len(), 2);
         assert_eq!(manifest.settings.layers[0].allow_missing, Some(false));
         assert_eq!(manifest.settings.layers[1].allow_missing, Some(true));
-        assert_eq!(manifest.missing_context_files.len(), 1);
+        assert_eq!(manifest.context_files.len(), 2);
+        assert!(
+            manifest
+                .context_files
+                .iter()
+                .all(|path| path != &local_scope.join("context/missing.md"))
+        );
+        assert_eq!(inspection.missing_context_files.len(), 1);
         assert_eq!(
-            manifest.missing_context_files[0].path,
+            inspection.missing_context_files[0].path,
             local_scope.join("context/missing.md")
         );
 

@@ -25,9 +25,9 @@ pub fn run_doctor(
     global_root_override: Option<&Path>,
     selected_profiles: &[String],
 ) -> Result<DoctorReport> {
-    let manifest = resolve::resolve_manifest(cwd, global_root_override, selected_profiles)?;
-    let healthy = manifest.missing_context_files.is_empty()
-        && manifest.remote_files.iter().all(|remote| {
+    let inspection = resolve::inspect_manifest(cwd, global_root_override, selected_profiles)?;
+    let healthy = inspection.missing_context_files.is_empty()
+        && inspection.manifest.remote_files.iter().all(|remote| {
             !matches!(
                 remote.status,
                 RemoteStatusKind::Missing | RemoteStatusKind::FetchFailed
@@ -35,15 +35,15 @@ pub fn run_doctor(
         });
 
     Ok(DoctorReport {
-        cwd: manifest.cwd,
-        global_root: manifest.global_root,
-        local_root: manifest.local_root,
-        local_roots: manifest.local_roots,
-        selected_profiles: manifest.selected_profiles,
-        allow_missing: manifest.settings.allow_missing,
-        settings_layers: manifest.settings.layers,
-        remote_files: manifest.remote_files,
-        missing_context_files: manifest.missing_context_files,
+        cwd: inspection.manifest.cwd,
+        global_root: inspection.manifest.global_root,
+        local_root: inspection.manifest.local_root,
+        local_roots: inspection.manifest.local_roots,
+        selected_profiles: inspection.manifest.selected_profiles,
+        allow_missing: inspection.manifest.settings.allow_missing,
+        settings_layers: inspection.manifest.settings.layers,
+        remote_files: inspection.manifest.remote_files,
+        missing_context_files: inspection.missing_context_files,
         healthy,
     })
 }
