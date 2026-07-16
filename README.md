@@ -4,6 +4,8 @@
 
 The project name is `ratatoskr`. The command is `rata`.
 
+The name comes from Ratatoskr (`RAH-tah-toss-ker`), the squirrel in Norse mythology who runs along Yggdrasil, the world tree, carrying messages and insults between the eagle in its branches and Nidhogg at its roots. 
+
 ## Install
 
 If you use Nix, you can run or install `rata` directly from this repo:
