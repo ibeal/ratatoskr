@@ -10,6 +10,7 @@ pub enum RatatoskrError {
     ReadConfig(PathBuf, io::Error),
     ParseConfig(PathBuf, toml::de::Error),
     ReadContextFile(PathBuf, io::Error),
+    WriteRemoteFile(PathBuf, io::Error),
     SerializeJson(serde_json::Error),
     InvalidRoot(String),
     AlreadyExists(PathBuf),
@@ -30,6 +31,13 @@ impl Display for RatatoskrError {
                 write!(
                     f,
                     "failed to read context file {}: {source}",
+                    path.display()
+                )
+            }
+            Self::WriteRemoteFile(path, source) => {
+                write!(
+                    f,
+                    "failed to write remote file {}: {source}",
                     path.display()
                 )
             }

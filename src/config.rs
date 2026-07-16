@@ -67,6 +67,43 @@ pub struct LoadedScope {
     pub config: ScopeConfig,
 }
 
+#[derive(Debug, Clone, Serialize)]
+pub struct EffectiveSettings {
+    pub allow_missing: bool,
+    pub global_root: PathBuf,
+    pub layers: Vec<SettingsLayer>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct SettingsLayer {
+    pub scope_kind: String,
+    pub scope_root: PathBuf,
+    pub allow_missing: Option<bool>,
+    pub global_root: Option<PathBuf>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct RemoteFileStatus {
+    pub name: String,
+    pub scope_kind: String,
+    pub scope_root: PathBuf,
+    pub url: String,
+    pub destination: PathBuf,
+    pub ttl: i64,
+    pub status: RemoteStatusKind,
+    pub detail: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RemoteStatusKind {
+    Present,
+    Fetched,
+    Refetched,
+    Missing,
+    FetchFailed,
+}
+
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
 pub enum ScopeKind {
     Global,
@@ -175,28 +212,52 @@ pub fn home_dir() -> PathBuf {
         .unwrap_or_else(|| PathBuf::from("."))
 }
 
-pub fn effective_allow_missing(global: Option<&LoadedScope>, locals: &[LoadedScope]) -> bool {
+pub fn resolve_effective_settings(
+    global: Option<&LoadedScope>,
+    locals: &[LoadedScope],
+    global_root_override: Option<&Path>,
+) -> EffectiveSettings {
     let mut allow_missing = true;
+    let mut layers = Vec::new();
 
     if let Some(scope) = global {
         if let Some(value) = scope.config.settings.allow_missing {
             allow_missing = value;
         }
+        layers.push(SettingsLayer {
+            scope_kind: scope.kind.label().to_string(),
+            scope_root: scope.root.clone(),
+            allow_missing: scope.config.settings.allow_missing,
+            global_root: resolve_scope_global_root(scope),
+        });
     }
 
     for scope in locals {
         if let Some(value) = scope.config.settings.allow_missing {
             allow_missing = value;
         }
+        layers.push(SettingsLayer {
+            scope_kind: scope.kind.label().to_string(),
+            scope_root: scope.root.clone(),
+            allow_missing: scope.config.settings.allow_missing,
+            global_root: resolve_scope_global_root(scope),
+        });
     }
 
-    allow_missing
+    EffectiveSettings {
+        allow_missing,
+        global_root: resolve_global_root(global_root_override, locals),
+        layers,
+    }
 }
 
-pub fn prepare_remote_files(scope: &LoadedScope) {
-    for remote in scope.config.remote_files.values() {
-        prepare_remote_file(scope, remote);
-    }
+pub fn prepare_remote_files(scope: &LoadedScope) -> Vec<RemoteFileStatus> {
+    scope
+        .config
+        .remote_files
+        .iter()
+        .map(|(name, remote)| prepare_remote_file(scope, name, remote))
+        .collect()
 }
 
 fn default_version() -> u32 {
@@ -243,32 +304,129 @@ fn resolve_path_setting(root: &Path, value: &str) -> PathBuf {
     }
 }
 
-fn prepare_remote_file(scope: &LoadedScope, remote: &RemoteFileConfig) {
+fn prepare_remote_file(
+    scope: &LoadedScope,
+    name: &str,
+    remote: &RemoteFileConfig,
+) -> RemoteFileStatus {
     let destination = remote_destination(scope, remote);
-    if !should_fetch_remote(&destination, remote.ttl.unwrap_or(-1)) {
-        return;
+    let ttl = remote.ttl.unwrap_or(-1);
+    let exists_before = destination.exists();
+    if !should_fetch_remote(&destination, ttl) {
+        return RemoteFileStatus {
+            name: name.to_string(),
+            scope_kind: scope.kind.label().to_string(),
+            scope_root: scope.root.clone(),
+            url: remote.url.clone(),
+            destination,
+            ttl,
+            status: if exists_before {
+                RemoteStatusKind::Present
+            } else {
+                RemoteStatusKind::Missing
+            },
+            detail: None,
+        };
     }
 
     let parent = match destination.parent() {
         Some(parent) => parent,
-        None => return,
+        None => {
+            return RemoteFileStatus {
+                name: name.to_string(),
+                scope_kind: scope.kind.label().to_string(),
+                scope_root: scope.root.clone(),
+                url: remote.url.clone(),
+                destination,
+                ttl,
+                status: RemoteStatusKind::FetchFailed,
+                detail: Some("remote destination has no parent directory".to_string()),
+            };
+        }
     };
-    if fs::create_dir_all(parent).is_err() {
-        return;
+    if let Err(source) = fs::create_dir_all(parent) {
+        return RemoteFileStatus {
+            name: name.to_string(),
+            scope_kind: scope.kind.label().to_string(),
+            scope_root: scope.root.clone(),
+            url: remote.url.clone(),
+            destination,
+            ttl,
+            status: RemoteStatusKind::FetchFailed,
+            detail: Some(source.to_string()),
+        };
     }
 
     let response = match reqwest::blocking::get(&remote.url) {
         Ok(response) => response,
-        Err(_) => return,
+        Err(source) => {
+            return RemoteFileStatus {
+                name: name.to_string(),
+                scope_kind: scope.kind.label().to_string(),
+                scope_root: scope.root.clone(),
+                url: remote.url.clone(),
+                destination,
+                ttl,
+                status: RemoteStatusKind::FetchFailed,
+                detail: Some(source.to_string()),
+            };
+        }
     };
     if !response.status().is_success() {
-        return;
+        return RemoteFileStatus {
+            name: name.to_string(),
+            scope_kind: scope.kind.label().to_string(),
+            scope_root: scope.root.clone(),
+            url: remote.url.clone(),
+            destination,
+            ttl,
+            status: RemoteStatusKind::FetchFailed,
+            detail: Some(format!("http {}", response.status())),
+        };
     }
     let bytes = match response.bytes() {
         Ok(bytes) => bytes,
-        Err(_) => return,
+        Err(source) => {
+            return RemoteFileStatus {
+                name: name.to_string(),
+                scope_kind: scope.kind.label().to_string(),
+                scope_root: scope.root.clone(),
+                url: remote.url.clone(),
+                destination,
+                ttl,
+                status: RemoteStatusKind::FetchFailed,
+                detail: Some(source.to_string()),
+            };
+        }
     };
-    let _ = fs::write(destination, &bytes);
+    if let Err(source) = fs::write(&destination, &bytes) {
+        let detail = RatatoskrError::WriteRemoteFile(destination.clone(), source).to_string();
+        return RemoteFileStatus {
+            name: name.to_string(),
+            scope_kind: scope.kind.label().to_string(),
+            scope_root: scope.root.clone(),
+            url: remote.url.clone(),
+            destination,
+            ttl,
+            status: RemoteStatusKind::FetchFailed,
+            detail: Some(detail),
+        };
+    }
+
+    RemoteFileStatus {
+        name: name.to_string(),
+        scope_kind: scope.kind.label().to_string(),
+        scope_root: scope.root.clone(),
+        url: remote.url.clone(),
+        destination,
+        ttl,
+        status: if exists_before {
+            RemoteStatusKind::Refetched
+        } else {
+            RemoteStatusKind::Fetched
+        },
+        detail: None,
+    }
 }
 
 fn remote_destination(scope: &LoadedScope, remote: &RemoteFileConfig) -> PathBuf {

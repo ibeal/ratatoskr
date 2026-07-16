@@ -72,6 +72,21 @@ pub enum Commands {
         #[arg(value_enum)]
         topic: DocsTopic,
     },
+    /// Inspect remote cache health, missing files, and settings composition.
+    Doctor {
+        /// Resolve relative to this directory instead of the current working directory.
+        #[arg(long)]
+        cwd: Option<PathBuf>,
+        /// Override the global rata root for this invocation.
+        #[arg(long)]
+        global_root: Option<PathBuf>,
+        /// Apply one or more additive context profiles in the order provided.
+        #[arg(long = "profile")]
+        profiles: Vec<String>,
+        /// Choose human-readable or JSON output.
+        #[arg(long, value_enum, default_value_t = OutputFormat::Text)]
+        format: OutputFormat,
+    },
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, ValueEnum)]

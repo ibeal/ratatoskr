@@ -1,6 +1,7 @@
 mod cli;
 mod config;
 mod docs;
+mod doctor;
 mod errors;
 mod init;
 mod pack;
@@ -87,6 +88,19 @@ fn run() -> Result<()> {
         }
         Commands::Docs { topic } => {
             print!("{}", docs::render(topic));
+        }
+        Commands::Doctor {
+            cwd,
+            global_root,
+            profiles,
+            format,
+        } => {
+            let cwd = cwd.unwrap_or(std::env::current_dir()?);
+            let report = doctor::run_doctor(&cwd, global_root.as_deref(), &profiles)?;
+            match format {
+                OutputFormat::Text => print!("{report}"),
+                OutputFormat::Json => println!("{}", serde_json::to_string_pretty(&report)?),
+            }
         }
     }
 

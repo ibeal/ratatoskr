@@ -6,10 +6,9 @@ use std::path::{Path, PathBuf};
 use serde::Serialize;
 
 use crate::cli::{OnlyTarget, ScopeFilter};
+use crate::config::EffectiveSettings;
 use crate::errors::{RatatoskrError, Result};
-use crate::resolve::{
-    self, ContextSource, EffectiveSettings, ResolvedContextEntry, ResolvedManifest,
-};
+use crate::resolve::{self, ContextSource, ResolvedContextEntry, ResolvedManifest};
 
 #[derive(Debug, Serialize)]
 pub struct ContextBundle {

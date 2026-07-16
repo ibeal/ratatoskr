@@ -73,11 +73,13 @@ The config file declares:
 
 Settings compose in scope order too. `allow_missing` defaults to `true`, and later scopes can
 override it. `global_root` can redirect which global root is used for a subtree or for the default
-global root itself.
+global root itself. `rata resolve` exposes the effective result plus a `settings_layers` trace so
+you can see global and local values and where later scopes overrode earlier ones.
 
 Remote files live in a separate `[remote_files]` section. They are fetched on a best-effort basis
 before resolution. Fetch failures never raise on their own. If you reference a cached remote file
 from `[context].include` and want that absence to fail, set `allow_missing = false`.
+`rata doctor` reports remote cache status and missing context files explicitly.
 
 Remote defaults:
 
@@ -100,6 +102,8 @@ rata resolve stores
 rata resolve --global-root ~/src/agent-context
 rata resolve stores --format json
 rata resolve --format json
+rata doctor
+rata doctor --format json
 rata pack
 rata only profile build
 rata only scope local

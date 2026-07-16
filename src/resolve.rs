@@ -1,10 +1,11 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::{self, Display};
+use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
 
 use serde::Serialize;
 
-use crate::config::{self, LoadedScope};
+use crate::config::{self, LoadedScope, RemoteFileStatus};
 use crate::errors::{RatatoskrError, Result};
 
 #[derive(Debug, Serialize)]
@@ -13,13 +14,15 @@ pub struct ResolvedManifest {
     pub global_root: Option<PathBuf>,
     pub local_root: Option<PathBuf>,
     pub local_roots: Vec<PathBuf>,
-    pub settings: EffectiveSettings,
+    pub settings: config::EffectiveSettings,
     pub selected_profiles: Vec<String>,
     pub available_profiles: Vec<AvailableProfile>,
     pub scopes: Vec<ResolvedScope>,
     pub context_files: Vec<PathBuf>,
     pub context_entries: Vec<ResolvedContextEntry>,
     pub stores: BTreeMap<String, PathBuf>,
+    pub remote_files: Vec<RemoteFileStatus>,
+    pub missing_context_files: Vec<MissingContextFile>,
 }
 
 #[derive(Debug, Serialize)]
@@ -28,13 +31,8 @@ pub struct ResolvedStores {
     pub global_root: Option<PathBuf>,
     pub local_root: Option<PathBuf>,
     pub local_roots: Vec<PathBuf>,
-    pub settings: EffectiveSettings,
+    pub settings: config::EffectiveSettings,
     pub stores: BTreeMap<String, PathBuf>,
-}
-
-#[derive(Debug, Serialize)]
-pub struct EffectiveSettings {
-    pub allow_missing: bool,
 }
 
 #[derive(Debug, Serialize)]
@@ -68,6 +66,14 @@ pub struct ScopeProfile {
     pub context_files: Vec<PathBuf>,
 }
 
+#[derive(Debug, Serialize)]
+pub struct MissingContextFile {
+    pub path: PathBuf,
+    pub scope_kind: String,
+    pub scope_root: PathBuf,
+    pub source: ContextSource,
+}
+
 #[derive(Clone, Debug, Serialize)]
 pub struct ResolvedContextEntry {
     pub path: PathBuf,
@@ -90,13 +96,15 @@ pub fn resolve_manifest(
 ) -> Result<ResolvedManifest> {
     let locals = config::load_local_scopes(cwd)?;
     let global = config::load_global_scope(global_root_override, &locals)?;
-    let allow_missing = config::effective_allow_missing(global.as_ref(), &locals);
+    let settings =
+        config::resolve_effective_settings(global.as_ref(), &locals, global_root_override);
 
+    let mut remote_files = Vec::new();
     if let Some(scope) = global.as_ref() {
-        config::prepare_remote_files(scope);
+        remote_files.extend(config::prepare_remote_files(scope));
     }
     for scope in &locals {
-        config::prepare_remote_files(scope);
+        remote_files.extend(config::prepare_remote_files(scope));
     }
 
     let mut scopes = Vec::new();
@@ -157,12 +165,24 @@ pub fn resolve_manifest(
         return Err(RatatoskrError::UnknownProfiles(missing_profiles));
     }
 
+    let missing_context_files = context_entries
+        .iter()
+        .filter(|entry| is_missing_file(&entry.path))
+        .cloned()
+        .map(|entry| MissingContextFile {
+            path: entry.path,
+            scope_kind: entry.scope_kind,
+            scope_root: entry.scope_root,
+            source: entry.source,
+        })
+        .collect();
+
     Ok(ResolvedManifest {
         cwd: cwd.to_path_buf(),
         global_root: global.map(|scope| scope.root),
         local_root: locals.last().map(|scope| scope.root.clone()),
         local_roots: locals.iter().map(|scope| scope.root.clone()).collect(),
-        settings: EffectiveSettings { allow_missing },
+        settings,
         selected_profiles: selected_profiles.to_vec(),
         available_profiles: available_profiles
             .into_iter()
@@ -175,6 +195,8 @@ pub fn resolve_manifest(
         context_files,
         context_entries,
         stores,
+        remote_files,
+        missing_context_files,
     })
 }
 
@@ -278,6 +300,26 @@ impl Display for ResolvedManifest {
         )?;
         writeln!(f, "local_root: {}", display_path(self.local_root.as_ref()))?;
         writeln!(f, "allow_missing: {}", self.settings.allow_missing)?;
+        writeln!(
+            f,
+            "effective_global_root: {}",
+            self.settings.global_root.display()
+        )?;
+        writeln!(f, "settings_layers:")?;
+        if self.settings.layers.is_empty() {
+            writeln!(f, "  - <none>")?;
+        } else {
+            for layer in &self.settings.layers {
+                writeln!(
+                    f,
+                    "  - {} {} allow_missing={} global_root={}",
+                    layer.scope_kind,
+                    layer.scope_root.display(),
+                    display_optional_bool(layer.allow_missing),
+                    display_optional_path(layer.global_root.as_ref()),
+                )?;
+            }
+        }
         writeln!(f, "local_roots:")?;
         if self.local_roots.is_empty() {
             writeln!(f, "  - <none>")?;
@@ -314,6 +356,28 @@ impl Display for ResolvedManifest {
         for (name, path) in &self.stores {
             writeln!(f, "  - {} => {}", name, path.display())?;
         }
+        writeln!(f, "remote_files:")?;
+        if self.remote_files.is_empty() {
+            writeln!(f, "  - <none>")?;
+        } else {
+            for remote in &self.remote_files {
+                writeln!(
+                    f,
+                    "  - {} [{}] {}",
+                    remote.name,
+                    remote.scope_kind,
+                    remote_status_label(remote),
+                )?;
+            }
+        }
+        writeln!(f, "missing_context_files:")?;
+        if self.missing_context_files.is_empty() {
+            writeln!(f, "  - <none>")?;
+        } else {
+            for missing in &self.missing_context_files {
+                writeln!(f, "  - {}", missing.path.display())?;
+            }
+        }
 
         Ok(())
     }
@@ -329,6 +393,26 @@ impl Display for ResolvedStores {
         )?;
         writeln!(f, "local_root: {}", display_path(self.local_root.as_ref()))?;
         writeln!(f, "allow_missing: {}", self.settings.allow_missing)?;
+        writeln!(
+            f,
+            "effective_global_root: {}",
+            self.settings.global_root.display()
+        )?;
+        writeln!(f, "settings_layers:")?;
+        if self.settings.layers.is_empty() {
+            writeln!(f, "  - <none>")?;
+        } else {
+            for layer in &self.settings.layers {
+                writeln!(
+                    f,
+                    "  - {} {} allow_missing={} global_root={}",
+                    layer.scope_kind,
+                    layer.scope_root.display(),
+                    display_optional_bool(layer.allow_missing),
+                    display_optional_path(layer.global_root.as_ref()),
+                )?;
+            }
+        }
         writeln!(f, "local_roots:")?;
         if self.local_roots.is_empty() {
             writeln!(f, "  - <none>")?;
@@ -367,6 +451,119 @@ fn display_path(path: Option<&PathBuf>) -> String {
         Some(path) => path.display().to_string(),
         None => "<none>".to_string(),
     }
+}
+
+fn display_optional_path(path: Option<&PathBuf>) -> String {
+    match path {
+        Some(path) => path.display().to_string(),
+        None => "<unset>".to_string(),
+    }
+}
+
+fn display_optional_bool(value: Option<bool>) -> String {
+    match value {
+        Some(value) => value.to_string(),
+        None => "<unset>".to_string(),
+    }
+}
+
+fn remote_status_label(remote: &RemoteFileStatus) -> String {
+    match &remote.detail {
+        Some(detail) => format!(
+            "{:?} {} ({detail})",
+            remote.status,
+            remote.destination.display()
+        ),
+        None => format!("{:?} {}", remote.status, remote.destination.display()),
+    }
+}
+
+fn is_missing_file(path: &Path) -> bool {
+    match std::fs::metadata(path) {
+        Ok(metadata) => !metadata.is_file(),
+        Err(source) if source.kind() == ErrorKind::NotFound => true,
+        Err(_) => true,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::fs;
+    use std::path::{Path, PathBuf};
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    use super::resolve_manifest;
+
+    #[test]
+    fn resolve_manifest_reports_settings_layers_and_missing_files() {
+        let root = temp_dir("resolve-manifest");
+        let global_root = root.join("global");
+        let project_root = root.join("workspace").join("project");
+        let local_scope = project_root.join(".rata");
+
+        fs::create_dir_all(global_root.join("context")).unwrap();
+        fs::create_dir_all(local_scope.join("context")).unwrap();
+
+        fs::write(
+            global_root.join(".rata.toml"),
+            r#"
+version = 1
+
+[context]
+include = ["context/global.md"]
+
+[settings]
+allow_missing = false
+"#,
+        )
+        .unwrap();
+        fs::write(global_root.join("context/global.md"), "global").unwrap();
+
+        fs::write(
+            local_scope.join(".rata.toml"),
+            r#"
+version = 1
+
+[context]
+include = ["context/local.md", "context/missing.md"]
+
+[settings]
+allow_missing = true
+"#,
+        )
+        .unwrap();
+        fs::write(local_scope.join("context/local.md"), "local").unwrap();
+
+        let manifest = resolve_manifest(&project_root, Some(&global_root), &[]).unwrap();
+
+        assert!(manifest.settings.allow_missing);
+        assert_eq!(manifest.settings.layers.len(), 2);
+        assert_eq!(manifest.settings.layers[0].allow_missing, Some(false));
+        assert_eq!(manifest.settings.layers[1].allow_missing, Some(true));
+        assert_eq!(manifest.missing_context_files.len(), 1);
+        assert_eq!(
+            manifest.missing_context_files[0].path,
+            local_scope.join("context/missing.md")
+        );
+
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    fn temp_dir(label: &str) -> PathBuf {
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let path = std::env::temp_dir().join(format!("rata-{label}-{unique}"));
+        if path.exists() {
+            fs::remove_dir_all(&path).unwrap();
+        }
+        fs::create_dir_all(&path).unwrap();
+        path
+    }
+
+    #[allow(dead_code)]
+    fn _assert_path(_: &Path) {}
 }
 
 fn push_unique_paths(target: &mut Vec<PathBuf>, paths: impl IntoIterator<Item = PathBuf>) {
