@@ -92,6 +92,13 @@ pub fn resolve_manifest(
     let global = config::load_global_scope(global_root_override, &locals)?;
     let allow_missing = config::effective_allow_missing(global.as_ref(), &locals);
 
+    if let Some(scope) = global.as_ref() {
+        config::prepare_remote_files(scope);
+    }
+    for scope in &locals {
+        config::prepare_remote_files(scope);
+    }
+
     let mut scopes = Vec::new();
     let mut context_files = Vec::new();
     let mut context_entries = Vec::new();

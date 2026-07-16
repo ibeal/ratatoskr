@@ -39,6 +39,15 @@ Settings are composable too:
 - `allow_missing` defaults to `true`
 - `global_root` can redirect which global root is active
 
+Remote files are best-effort caches. If a scope defines them, `rata` will try to refresh them before
+resolution, but fetch failures are ignored. A missing cached remote only becomes fatal later if a
+referenced file is still absent and `allow_missing = false`.
+
+Remote defaults:
+
+- `destination` defaults to `remote/` next to the defining `.rata.toml`
+- `ttl` defaults to `-1`, which means never refetch if the cached file already exists
+
 Global root precedence is:
 
 1. `--global-root <path>`

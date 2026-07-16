@@ -1,6 +1,8 @@
 use std::collections::BTreeMap;
 use std::fs;
+use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
+use std::time::{Duration, SystemTime};
 
 use serde::{Deserialize, Serialize};
 
@@ -19,6 +21,8 @@ pub struct ScopeConfig {
     #[serde(default)]
     pub profiles: BTreeMap<String, ProfileConfig>,
     #[serde(default)]
+    pub remote_files: BTreeMap<String, RemoteFileConfig>,
+    #[serde(default)]
     pub settings: SettingsConfig,
     #[serde(default)]
     pub stores: BTreeMap<String, String>,
@@ -36,6 +40,16 @@ pub struct ProfileConfig {
     pub description: Option<String>,
     #[serde(default)]
     pub include: Vec<String>,
+}
+
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
+pub struct RemoteFileConfig {
+    pub url: String,
+    pub filename: String,
+    #[serde(default)]
+    pub destination: Option<String>,
+    #[serde(default)]
+    pub ttl: Option<i64>,
 }
 
 #[derive(Debug, Clone, Default, Deserialize, Serialize)]
@@ -179,6 +193,12 @@ pub fn effective_allow_missing(global: Option<&LoadedScope>, locals: &[LoadedSco
     allow_missing
 }
 
+pub fn prepare_remote_files(scope: &LoadedScope) {
+    for remote in scope.config.remote_files.values() {
+        prepare_remote_file(scope, remote);
+    }
+}
+
 fn default_version() -> u32 {
     1
 }
@@ -221,4 +241,65 @@ fn resolve_path_setting(root: &Path, value: &str) -> PathBuf {
     } else {
         root.join(path)
     }
+}
+
+fn prepare_remote_file(scope: &LoadedScope, remote: &RemoteFileConfig) {
+    let destination = remote_destination(scope, remote);
+    if !should_fetch_remote(&destination, remote.ttl.unwrap_or(-1)) {
+        return;
+    }
+
+    let parent = match destination.parent() {
+        Some(parent) => parent,
+        None => return,
+    };
+    if fs::create_dir_all(parent).is_err() {
+        return;
+    }
+
+    let response = match reqwest::blocking::get(&remote.url) {
+        Ok(response) => response,
+        Err(_) => return,
+    };
+    if !response.status().is_success() {
+        return;
+    }
+    let bytes = match response.bytes() {
+        Ok(bytes) => bytes,
+        Err(_) => return,
+    };
+    let _ = fs::write(destination, &bytes);
+}
+
+fn remote_destination(scope: &LoadedScope, remote: &RemoteFileConfig) -> PathBuf {
+    let base = remote
+        .destination
+        .as_deref()
+        .map(|path| resolve_path_setting(&scope.root, path))
+        .unwrap_or_else(|| scope.root.join("remote"));
+    base.join(&remote.filename)
+}
+
+fn should_fetch_remote(path: &Path, ttl: i64) -> bool {
+    if !path.exists() {
+        return true;
+    }
+    if ttl < 0 {
+        return false;
+    }
+    if ttl == 0 {
+        return true;
+    }
+
+    let modified = match fs::metadata(path).and_then(|metadata| metadata.modified()) {
+        Ok(modified) => modified,
+        Err(source) if source.kind() == ErrorKind::NotFound => return true,
+        Err(_) => return true,
+    };
+    let age = match SystemTime::now().duration_since(modified) {
+        Ok(age) => age,
+        Err(_) => Duration::from_secs(0),
+    };
+
+    age.as_secs() >= ttl as u64
 }

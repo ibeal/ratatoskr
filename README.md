@@ -44,12 +44,22 @@ The config file declares:
 
 - ordered context file includes
 - additive profiles that include additional context files
+- remote files to fetch into a local cache
 - settings like `allow_missing` and `global_root`
 - named datastore directories
 
 Settings compose in scope order too. `allow_missing` defaults to `true`, and later scopes can
 override it. `global_root` can redirect which global root is used for a subtree or for the default
 global root itself.
+
+Remote files live in a separate `[remote_files]` section. They are fetched on a best-effort basis
+before resolution. Fetch failures never raise on their own. If you reference a cached remote file
+from `[context].include` and want that absence to fail, set `allow_missing = false`.
+
+Remote defaults:
+
+- `destination` defaults to `remote/` next to the defining `.rata.toml`
+- `ttl` defaults to `-1`, which means never refetch if the cached file already exists
 
 Scopes compose in order: global first, then outer local scopes, then inner local scopes. Store names
 override by last writer, so more specific scopes win.
@@ -141,10 +151,16 @@ version = 1
 include = [
   "context/project.md",
   "context/tools.md",
+  "remote/architecture.md",
 ]
 
 [settings]
 allow_missing = true
+
+[remote_files.architecture]
+url = "https://example.com/architecture.md"
+filename = "architecture.md"
+ttl = -1
 
 [profiles.build]
 description = "Project-specific coding context"

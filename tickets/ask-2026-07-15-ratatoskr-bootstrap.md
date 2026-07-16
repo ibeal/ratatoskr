@@ -93,3 +93,7 @@ Go.
   skipped during `pack` and `only`.
 - Implemented `global_root`, which can redirect the default global root or override it from a local
   scope.
+- Replaced the old standalone global-root jump mechanism with the composable `[settings].global_root`
+  model in `.rata.toml`.
+- Added best-effort `[remote_files]` support with cached fetches, per-file TTLs, and default cache
+  destinations under `remote/` next to the defining `.rata.toml`.
