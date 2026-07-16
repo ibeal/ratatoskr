@@ -9,7 +9,6 @@ use crate::errors::{RatatoskrError, Result};
 pub const LOCAL_DIR: &str = ".rata";
 pub const CONFIG_FILE: &str = ".rata.toml";
 pub const GLOBAL_ROOT_ENV: &str = "RATA_ROOT";
-pub const GLOBAL_ROOT_POINTER_DIR: &str = ".rata";
 
 #[derive(Debug, Clone, Default, Deserialize, Serialize)]
 pub struct ScopeConfig {
@@ -19,6 +18,8 @@ pub struct ScopeConfig {
     pub context: ContextConfig,
     #[serde(default)]
     pub profiles: BTreeMap<String, ProfileConfig>,
+    #[serde(default)]
+    pub settings: SettingsConfig,
     #[serde(default)]
     pub stores: BTreeMap<String, String>,
 }
@@ -37,9 +38,12 @@ pub struct ProfileConfig {
     pub include: Vec<String>,
 }
 
-#[derive(Debug, Clone, Default, Deserialize)]
-struct GlobalRootPointerConfig {
-    root: Option<String>,
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
+pub struct SettingsConfig {
+    #[serde(default)]
+    pub allow_missing: Option<bool>,
+    #[serde(default)]
+    pub global_root: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -68,20 +72,26 @@ pub fn default_global_root() -> PathBuf {
     home_dir().join(".config").join("rata")
 }
 
-pub fn resolve_global_root(cli_override: Option<&Path>) -> PathBuf {
+pub fn resolve_global_root(cli_override: Option<&Path>, local_scopes: &[LoadedScope]) -> PathBuf {
     if let Some(path) = cli_override {
-        return path.to_path_buf();
+        return follow_global_root_jump(path.to_path_buf());
     }
 
     if let Some(path) = std::env::var_os(GLOBAL_ROOT_ENV) {
-        return PathBuf::from(path);
+        return follow_global_root_jump(PathBuf::from(path));
     }
 
-    if let Some(path) = load_global_root_pointer() {
-        return path;
+    if let Some(scope) = local_scopes
+        .iter()
+        .rev()
+        .find(|scope| scope.config.settings.global_root.is_some())
+    {
+        if let Some(path) = resolve_scope_global_root(scope) {
+            return follow_global_root_jump(path);
+        }
     }
 
-    default_global_root()
+    follow_global_root_jump(default_global_root())
 }
 
 pub fn discover_local_roots(start: &Path) -> Vec<PathBuf> {
@@ -96,8 +106,14 @@ pub fn discover_local_roots(start: &Path) -> Vec<PathBuf> {
     roots
 }
 
-pub fn load_global_scope(root_override: Option<&Path>) -> Result<Option<LoadedScope>> {
-    load_scope(resolve_global_root(root_override), ScopeKind::Global)
+pub fn load_global_scope(
+    root_override: Option<&Path>,
+    local_scopes: &[LoadedScope],
+) -> Result<Option<LoadedScope>> {
+    load_scope(
+        resolve_global_root(root_override, local_scopes),
+        ScopeKind::Global,
+    )
 }
 
 pub fn load_local_scopes(start: &Path) -> Result<Vec<LoadedScope>> {
@@ -145,30 +161,64 @@ pub fn home_dir() -> PathBuf {
         .unwrap_or_else(|| PathBuf::from("."))
 }
 
-pub fn global_root_pointer_path() -> PathBuf {
-    home_dir()
-        .join(".config")
-        .join(GLOBAL_ROOT_POINTER_DIR)
-        .join(CONFIG_FILE)
-}
+pub fn effective_allow_missing(global: Option<&LoadedScope>, locals: &[LoadedScope]) -> bool {
+    let mut allow_missing = true;
 
-fn load_global_root_pointer() -> Option<PathBuf> {
-    let pointer_path = global_root_pointer_path();
-    if !pointer_path.is_file() {
-        return None;
+    if let Some(scope) = global {
+        if let Some(value) = scope.config.settings.allow_missing {
+            allow_missing = value;
+        }
     }
 
-    let raw = fs::read_to_string(&pointer_path).ok()?;
-    let config = toml::from_str::<GlobalRootPointerConfig>(&raw).ok()?;
-    let root = config.root?;
-    let root = root.trim();
-    if root.is_empty() {
-        return None;
+    for scope in locals {
+        if let Some(value) = scope.config.settings.allow_missing {
+            allow_missing = value;
+        }
     }
 
-    Some(PathBuf::from(root))
+    allow_missing
 }
 
 fn default_version() -> u32 {
     1
+}
+
+fn resolve_scope_global_root(scope: &LoadedScope) -> Option<PathBuf> {
+    scope
+        .config
+        .settings
+        .global_root
+        .as_deref()
+        .map(|value| resolve_path_setting(&scope.root, value))
+}
+
+fn follow_global_root_jump(initial_root: PathBuf) -> PathBuf {
+    let mut current = initial_root;
+    let mut visited = Vec::<PathBuf>::new();
+
+    loop {
+        if visited.iter().any(|path| path == &current) {
+            return current;
+        }
+        visited.push(current.clone());
+
+        let next = load_scope_config(&current)
+            .ok()
+            .and_then(|config| config.settings.global_root)
+            .map(|value| resolve_path_setting(&current, &value));
+
+        match next {
+            Some(path) if path != current => current = path,
+            _ => return current,
+        }
+    }
+}
+
+fn resolve_path_setting(root: &Path, value: &str) -> PathBuf {
+    let path = PathBuf::from(value);
+    if path.is_absolute() {
+        path
+    } else {
+        root.join(path)
+    }
 }

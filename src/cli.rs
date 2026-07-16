@@ -53,6 +53,20 @@ pub enum Commands {
         #[arg(long, value_enum, default_value_t = OutputFormat::Text)]
         format: OutputFormat,
     },
+    /// Read only a selected slice of the resolved context.
+    Only {
+        #[command(subcommand)]
+        target: OnlyTarget,
+        /// Resolve relative to this directory instead of the current working directory.
+        #[arg(long)]
+        cwd: Option<PathBuf>,
+        /// Override the global rata root for this invocation.
+        #[arg(long)]
+        global_root: Option<PathBuf>,
+        /// Choose human-readable or JSON output.
+        #[arg(long, value_enum, default_value_t = OutputFormat::Text)]
+        format: OutputFormat,
+    },
     /// Print built-in documentation for common rata workflows.
     Docs {
         #[arg(value_enum)]
@@ -92,4 +106,23 @@ pub enum ResolveTarget {
 #[derive(Clone, Copy, Debug, Eq, PartialEq, ValueEnum)]
 pub enum DocsTopic {
     Agent,
+}
+
+#[derive(Debug, Subcommand)]
+pub enum OnlyTarget {
+    /// Read only the files contributed by a named profile across all active scopes.
+    Profile { name: String },
+    /// Read only the files contributed by a scope kind.
+    Scope {
+        #[arg(value_enum)]
+        kind: ScopeFilter,
+    },
+    /// Read only files whose basename matches the provided name across all active scopes.
+    File { name: String },
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, ValueEnum)]
+pub enum ScopeFilter {
+    Global,
+    Local,
 }

@@ -43,6 +43,9 @@ include = [
   "context/preferences.md",
 ]
 
+[settings]
+allow_missing = true
+
 [profiles.build]
 description = "Additional context for building software"
 include = ["context/sdlc.md"]
@@ -65,6 +68,9 @@ include = [
   "context/project.md",
   "context/tools.md",
 ]
+
+[settings]
+allow_missing = true
 
 [profiles.build]
 description = "Project-specific coding context"

@@ -13,10 +13,12 @@ pub struct ResolvedManifest {
     pub global_root: Option<PathBuf>,
     pub local_root: Option<PathBuf>,
     pub local_roots: Vec<PathBuf>,
+    pub settings: EffectiveSettings,
     pub selected_profiles: Vec<String>,
     pub available_profiles: Vec<AvailableProfile>,
     pub scopes: Vec<ResolvedScope>,
     pub context_files: Vec<PathBuf>,
+    pub context_entries: Vec<ResolvedContextEntry>,
     pub stores: BTreeMap<String, PathBuf>,
 }
 
@@ -26,7 +28,13 @@ pub struct ResolvedStores {
     pub global_root: Option<PathBuf>,
     pub local_root: Option<PathBuf>,
     pub local_roots: Vec<PathBuf>,
+    pub settings: EffectiveSettings,
     pub stores: BTreeMap<String, PathBuf>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct EffectiveSettings {
+    pub allow_missing: bool,
 }
 
 #[derive(Debug, Serialize)]
@@ -42,6 +50,7 @@ pub struct ResolvedScope {
     pub base_context_files: Vec<PathBuf>,
     pub active_profiles: Vec<AppliedProfile>,
     pub context_files: Vec<PathBuf>,
+    pub context_entries: Vec<ResolvedContextEntry>,
     pub available_profiles: Vec<ScopeProfile>,
     pub stores: BTreeMap<String, PathBuf>,
 }
@@ -59,16 +68,33 @@ pub struct ScopeProfile {
     pub context_files: Vec<PathBuf>,
 }
 
+#[derive(Clone, Debug, Serialize)]
+pub struct ResolvedContextEntry {
+    pub path: PathBuf,
+    pub scope_kind: String,
+    pub scope_root: PathBuf,
+    pub source: ContextSource,
+}
+
+#[derive(Clone, Debug, Serialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum ContextSource {
+    Base,
+    Profile { name: String },
+}
+
 pub fn resolve_manifest(
     cwd: &Path,
     global_root_override: Option<&Path>,
     selected_profiles: &[String],
 ) -> Result<ResolvedManifest> {
-    let global = config::load_global_scope(global_root_override)?;
     let locals = config::load_local_scopes(cwd)?;
+    let global = config::load_global_scope(global_root_override, &locals)?;
+    let allow_missing = config::effective_allow_missing(global.as_ref(), &locals);
 
     let mut scopes = Vec::new();
     let mut context_files = Vec::new();
+    let mut context_entries = Vec::new();
     let mut stores = BTreeMap::new();
     let mut available_profiles = BTreeMap::<String, BTreeSet<String>>::new();
     let mut matched_profiles = BTreeSet::new();
@@ -84,6 +110,10 @@ pub fn resolve_manifest(
         }
 
         push_unique_paths(&mut context_files, resolved.context_files.iter().cloned());
+        push_unique_entries(
+            &mut context_entries,
+            resolved.context_entries.iter().cloned(),
+        );
         for (name, path) in &resolved.stores {
             stores.insert(name.clone(), path.clone());
         }
@@ -101,6 +131,10 @@ pub fn resolve_manifest(
         }
 
         push_unique_paths(&mut context_files, resolved.context_files.iter().cloned());
+        push_unique_entries(
+            &mut context_entries,
+            resolved.context_entries.iter().cloned(),
+        );
         for (name, path) in &resolved.stores {
             stores.insert(name.clone(), path.clone());
         }
@@ -121,6 +155,7 @@ pub fn resolve_manifest(
         global_root: global.map(|scope| scope.root),
         local_root: locals.last().map(|scope| scope.root.clone()),
         local_roots: locals.iter().map(|scope| scope.root.clone()).collect(),
+        settings: EffectiveSettings { allow_missing },
         selected_profiles: selected_profiles.to_vec(),
         available_profiles: available_profiles
             .into_iter()
@@ -131,6 +166,7 @@ pub fn resolve_manifest(
             .collect(),
         scopes,
         context_files,
+        context_entries,
         stores,
     })
 }
@@ -149,6 +185,16 @@ fn resolve_scope(
         .collect::<Vec<_>>();
 
     let mut context_files = base_context_files.clone();
+    let mut context_entries = base_context_files
+        .iter()
+        .cloned()
+        .map(|path| ResolvedContextEntry {
+            path,
+            scope_kind: scope.kind.label().to_string(),
+            scope_root: scope.root.clone(),
+            source: ContextSource::Base,
+        })
+        .collect::<Vec<_>>();
     let mut active_profiles = Vec::new();
 
     for profile_name in selected_profiles {
@@ -160,6 +206,20 @@ fn resolve_scope(
                 .map(|entry| scope.root.join(entry))
                 .collect::<Vec<_>>();
             push_unique_paths(&mut context_files, profile_files.iter().cloned());
+            push_unique_entries(
+                &mut context_entries,
+                profile_files
+                    .iter()
+                    .cloned()
+                    .map(|path| ResolvedContextEntry {
+                        path,
+                        scope_kind: scope.kind.label().to_string(),
+                        scope_root: scope.root.clone(),
+                        source: ContextSource::Profile {
+                            name: profile_name.clone(),
+                        },
+                    }),
+            );
             active_profiles.push(AppliedProfile {
                 name: profile_name.clone(),
                 context_files: profile_files,
@@ -195,6 +255,7 @@ fn resolve_scope(
         base_context_files,
         active_profiles,
         context_files,
+        context_entries,
         available_profiles,
         stores,
     }
@@ -209,6 +270,7 @@ impl Display for ResolvedManifest {
             display_path(self.global_root.as_ref())
         )?;
         writeln!(f, "local_root: {}", display_path(self.local_root.as_ref()))?;
+        writeln!(f, "allow_missing: {}", self.settings.allow_missing)?;
         writeln!(f, "local_roots:")?;
         if self.local_roots.is_empty() {
             writeln!(f, "  - <none>")?;
@@ -259,6 +321,7 @@ impl Display for ResolvedStores {
             display_path(self.global_root.as_ref())
         )?;
         writeln!(f, "local_root: {}", display_path(self.local_root.as_ref()))?;
+        writeln!(f, "allow_missing: {}", self.settings.allow_missing)?;
         writeln!(f, "local_roots:")?;
         if self.local_roots.is_empty() {
             writeln!(f, "  - <none>")?;
@@ -287,6 +350,7 @@ pub fn resolve_stores(
         global_root: manifest.global_root,
         local_root: manifest.local_root,
         local_roots: manifest.local_roots,
+        settings: manifest.settings,
         stores: manifest.stores,
     })
 }
@@ -302,6 +366,17 @@ fn push_unique_paths(target: &mut Vec<PathBuf>, paths: impl IntoIterator<Item = 
     for path in paths {
         if !target.iter().any(|existing| existing == &path) {
             target.push(path);
+        }
+    }
+}
+
+fn push_unique_entries(
+    target: &mut Vec<ResolvedContextEntry>,
+    entries: impl IntoIterator<Item = ResolvedContextEntry>,
+) {
+    for entry in entries {
+        if !target.iter().any(|existing| existing.path == entry.path) {
+            target.push(entry);
         }
     }
 }

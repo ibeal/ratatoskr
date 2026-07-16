@@ -3,18 +3,27 @@
 Agents should usually do this:
 
 1. `rata pack` on startup for default context
-2. `rata pack --profile ...` for task-specific overlays
+2. `rata only profile ...` for task-specific overlays without refetching base context
 3. `rata resolve stores` when they need durable store paths
 
 Common commands:
 
 ```text
 rata pack
-rata pack --profile build
-rata pack --profile review
+rata only profile build
+rata only profile review
+rata only scope local
+rata only file agents.md
 rata resolve stores
 rata resolve stores --format json
-rata resolve summary --profile build
+```
+
+Use `only` when the agent already has the base pack and just needs an extra slice:
+
+```text
+rata only profile build
+rata only scope local
+rata only file agents.md
 ```
 
 Scope order is:
@@ -25,9 +34,15 @@ Scope order is:
 
 Profile selection is additive across all active scopes.
 
+Settings are composable too:
+
+- `allow_missing` defaults to `true`
+- `global_root` can redirect which global root is active
+
 Global root precedence is:
 
 1. `--global-root <path>`
 2. `RATA_ROOT`
-3. `~/.config/.rata/.rata.toml`
-4. `~/.config/rata`
+3. nearest local `.rata/.rata.toml` with `[settings].global_root`
+4. `~/.config/rata/.rata.toml` with `[settings].global_root`
+5. `~/.config/rata`

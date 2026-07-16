@@ -28,8 +28,9 @@ Global root precedence is:
 
 1. `--global-root <path>`
 2. `RATA_ROOT`
-3. `~/.config/.rata/.rata.toml` with `root = "/path/to/context-root"`
-4. `~/.config/rata`
+3. nearest local `.rata/.rata.toml` with `[settings].global_root`
+4. `~/.config/rata/.rata.toml` with `[settings].global_root`
+5. `~/.config/rata`
 
 Each root contains:
 
@@ -43,7 +44,12 @@ The config file declares:
 
 - ordered context file includes
 - additive profiles that include additional context files
+- settings like `allow_missing` and `global_root`
 - named datastore directories
+
+Settings compose in scope order too. `allow_missing` defaults to `true`, and later scopes can
+override it. `global_root` can redirect which global root is used for a subtree or for the default
+global root itself.
 
 Scopes compose in order: global first, then outer local scopes, then inner local scopes. Store names
 override by last writer, so more specific scopes win.
@@ -62,19 +68,26 @@ rata resolve --global-root ~/src/agent-context
 rata resolve stores --format json
 rata resolve --format json
 rata pack
-rata pack --profile build
+rata only profile build
+rata only scope local
+rata only file agents.md
 rata pack --format json
 rata docs agent
 ```
 
-You can also keep a machine-local pointer file at `~/.config/.rata/.rata.toml`:
+You can also point the default global root somewhere else using `~/.config/rata/.rata.toml`:
 
 ```toml
-root = "/Users/ian/src/agent-context"
+[settings]
+global_root = "/Users/ian/src/agent-context"
 ```
 
-That lets you keep your portable global context in a cloned repo without requiring it to live under
-`~/.config/rata`.
+And a local scope can override the global root for everything inside that subtree:
+
+```toml
+[settings]
+global_root = "../../shared/work-context"
+```
 
 A nested layout like this is supported:
 
@@ -129,6 +142,9 @@ include = [
   "context/project.md",
   "context/tools.md",
 ]
+
+[settings]
+allow_missing = true
 
 [profiles.build]
 description = "Project-specific coding context"

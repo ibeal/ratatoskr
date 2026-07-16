@@ -5,7 +5,7 @@
 - Status: in_progress
 - Phase: build
 - Created: 2026-07-15
-- Updated: 2026-07-15
+- Updated: 2026-07-16
 
 ## Spec
 
@@ -83,3 +83,13 @@ Go.
   serve workflow guidance directly.
 - Refined the agent flow so startup uses `rata pack`, profiles are opt-in follow-up packs, and
   `rata resolve stores` exposes durable store locations without mixing them into prompt context.
+- Added `rata only` so agents can fetch narrow context slices without refetching the full base
+  bundle, including selectors for `profile`, `scope`, and `file`.
+
+### 2026-07-16
+
+- Added composable `[settings]` support in `.rata.toml`.
+- Implemented `allow_missing`, which defaults to `true` and allows missing context files to be
+  skipped during `pack` and `only`.
+- Implemented `global_root`, which can redirect the default global root or override it from a local
+  scope.

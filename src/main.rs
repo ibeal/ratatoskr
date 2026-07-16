@@ -72,6 +72,19 @@ fn run() -> Result<()> {
                 OutputFormat::Json => println!("{}", serde_json::to_string_pretty(&bundle)?),
             }
         }
+        Commands::Only {
+            target,
+            cwd,
+            global_root,
+            format,
+        } => {
+            let cwd = cwd.unwrap_or(std::env::current_dir()?);
+            let bundle = pack::build_only_bundle(&cwd, global_root.as_deref(), &target)?;
+            match format {
+                OutputFormat::Text => print!("{bundle}"),
+                OutputFormat::Json => println!("{}", serde_json::to_string_pretty(&bundle)?),
+            }
+        }
         Commands::Docs { topic } => {
             print!("{}", docs::render(topic));
         }
