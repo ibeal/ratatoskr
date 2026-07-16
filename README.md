@@ -4,6 +4,29 @@
 
 The project name is `ratatoskr`. The command is `rata`.
 
+## Install
+
+If you use Nix, you can run or install `rata` directly from this repo:
+
+```text
+nix run .#
+nix build .#
+nix profile install .#
+```
+
+From GitHub:
+
+```text
+nix run github:ibeal/ratatoskr
+nix profile install github:ibeal/ratatoskr
+```
+
+For local development:
+
+```text
+nix develop
+```
+
 ## Goal
 
 Provide a small, agent-agnostic layer for:
