@@ -110,8 +110,6 @@ fn run() -> Result<()> {
 fn default_root_for_init(scope: InitScope) -> PathBuf {
     match scope {
         InitScope::Global => config::default_global_root(),
-        InitScope::Local => std::env::current_dir()
-            .unwrap_or_else(|_| PathBuf::from("."))
-            .join(".rata"),
+        InitScope::Local => std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")),
     }
 }

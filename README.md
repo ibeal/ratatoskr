@@ -46,23 +46,25 @@ specific agent products.
 
 Ratatoskr resolves context in layers:
 
-1. Global root: `~/.config/rata`
-2. Local scopes: every ancestor `.rata/` found by walking upward from the current directory
+1. Global root: `~/.rata`
+2. Local scopes: every ancestor directory containing `rata.toml`, found by walking upward from the current directory
 
 Global root precedence is:
 
 1. `--global-root <path>`
 2. `RATA_ROOT`
-3. nearest local `.rata/.rata.toml` with `[settings].global_root`
-4. `~/.config/rata/.rata.toml` with `[settings].global_root`
-5. `~/.config/rata`
+3. nearest local `rata.toml` with `[settings].global_root`
+4. `~/.rata/rata.toml` with `[settings].global_root`
+5. `~/.rata`
 
 Each root contains:
 
 ```text
-.rata.toml
+rata.toml
 context/
 stores/
+.rata/
+  remotes/
 ```
 
 The config file declares:
@@ -85,7 +87,7 @@ from `[context].include` and want that absence to fail, set `allow_missing = fal
 
 Remote defaults:
 
-- `destination` defaults to `remote/` next to the defining `.rata.toml`
+- `destination` defaults to `.rata/remotes/` next to the defining `rata.toml`
 - `ttl` defaults to `-1`, which means never refetch if the cached file already exists
 
 Scopes compose in order: global first, then outer local scopes, then inner local scopes. Store names
@@ -114,7 +116,7 @@ rata pack --format json
 rata docs agent
 ```
 
-You can also point the default global root somewhere else using `~/.config/rata/.rata.toml`:
+You can also point the default global root somewhere else using `~/.rata/rata.toml`:
 
 ```toml
 [settings]
@@ -133,38 +135,42 @@ A nested layout like this is supported:
 ```text
 ~/src/
   ap/
-    .rata/
+    rata.toml
   ap/service-a/
-    .rata/
+    rata.toml
 ```
 
 Running `rata resolve` inside `service-a` will compose:
 
 1. global scope
-2. `~/src/ap/.rata`
-3. `~/src/ap/service-a/.rata`
+2. `~/src/ap`
+3. `~/src/ap/service-a`
 
 ## Example layout
 
 ```text
-~/.config/rata/
-  .rata.toml
+~/.rata/
+  rata.toml
   context/
     agents.md
     preferences.md
     sdlc.md
+  .rata/
+    remotes/
   stores/
     decisions/
     memory/
     tickets/
 
-<repo>/.rata/
-  .rata.toml
+<repo>/
+  rata.toml
   context/
     project.md
     tools.md
     standards.md
     review-checklist.md
+  .rata/
+    remotes/
   stores/
     decisions/
     memory/
@@ -180,7 +186,7 @@ version = 1
 include = [
   "context/project.md",
   "context/tools.md",
-  "remote/architecture.md",
+  ".rata/remotes/architecture.md",
 ]
 
 [settings]

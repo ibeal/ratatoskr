@@ -194,9 +194,13 @@ pub fn inspect_manifest(
         context_entries.retain(|entry| !is_missing_file(&entry.path));
         context_files.retain(|path| !is_missing_file(path));
         for scope in &mut scopes {
-            scope.base_context_files.retain(|path| !is_missing_file(path));
+            scope
+                .base_context_files
+                .retain(|path| !is_missing_file(path));
             scope.context_files.retain(|path| !is_missing_file(path));
-            scope.context_entries.retain(|entry| !is_missing_file(&entry.path));
+            scope
+                .context_entries
+                .retain(|entry| !is_missing_file(&entry.path));
             for profile in &mut scope.active_profiles {
                 profile.context_files.retain(|path| !is_missing_file(path));
             }
@@ -464,13 +468,13 @@ mod tests {
         let root = temp_dir("resolve-manifest");
         let global_root = root.join("global");
         let project_root = root.join("workspace").join("project");
-        let local_scope = project_root.join(".rata");
+        let local_scope = project_root.clone();
 
         fs::create_dir_all(global_root.join("context")).unwrap();
         fs::create_dir_all(local_scope.join("context")).unwrap();
 
         fs::write(
-            global_root.join(".rata.toml"),
+            global_root.join("rata.toml"),
             r#"
 version = 1
 
@@ -485,7 +489,7 @@ allow_missing = false
         fs::write(global_root.join("context/global.md"), "global").unwrap();
 
         fs::write(
-            local_scope.join(".rata.toml"),
+            local_scope.join("rata.toml"),
             r#"
 version = 1
 

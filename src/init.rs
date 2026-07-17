@@ -17,6 +17,7 @@ pub fn scaffold(scope: InitScope, root: &Path) -> Result<()> {
     ensure_absent(&config_path)?;
 
     fs::create_dir_all(root.join("context"))?;
+    fs::create_dir_all(root.join(config::LOCAL_STATE_DIR).join("remotes"))?;
     fs::create_dir_all(root.join("stores/decisions"))?;
     fs::create_dir_all(root.join("stores/memory"))?;
     fs::create_dir_all(root.join("stores/tickets"))?;

@@ -8,8 +8,8 @@ use serde::{Deserialize, Serialize};
 
 use crate::errors::{RatatoskrError, Result};
 
-pub const LOCAL_DIR: &str = ".rata";
-pub const CONFIG_FILE: &str = ".rata.toml";
+pub const LOCAL_STATE_DIR: &str = ".rata";
+pub const CONFIG_FILE: &str = "rata.toml";
 pub const GLOBAL_ROOT_ENV: &str = "RATA_ROOT";
 
 #[derive(Debug, Clone, Default, Deserialize, Serialize)]
@@ -120,7 +120,7 @@ impl ScopeKind {
 }
 
 pub fn default_global_root() -> PathBuf {
-    home_dir().join(".config").join("rata")
+    home_dir().join(".rata")
 }
 
 pub fn resolve_global_root(cli_override: Option<&Path>, local_scopes: &[LoadedScope]) -> PathBuf {
@@ -148,10 +148,7 @@ pub fn resolve_global_root(cli_override: Option<&Path>, local_scopes: &[LoadedSc
 pub fn discover_local_roots(start: &Path) -> Vec<PathBuf> {
     let mut roots = start
         .ancestors()
-        .filter_map(|dir| {
-            let candidate = dir.join(LOCAL_DIR);
-            candidate.is_dir().then_some(candidate)
-        })
+        .filter_map(|dir| dir.join(CONFIG_FILE).is_file().then_some(dir.to_path_buf()))
         .collect::<Vec<_>>();
     roots.reverse();
     roots
@@ -196,9 +193,9 @@ pub fn load_scope_config(root: &Path) -> Result<ScopeConfig> {
 }
 
 pub fn validate_scope_root(root: &Path, kind: ScopeKind) -> Result<()> {
-    if kind == ScopeKind::Local && root.file_name().and_then(|s| s.to_str()) != Some(LOCAL_DIR) {
+    if kind == ScopeKind::Local && root.join(CONFIG_FILE).exists() {
         return Err(RatatoskrError::InvalidRoot(format!(
-            "local roots must end with `{LOCAL_DIR}`: {}",
+            "local scope already contains `{CONFIG_FILE}`: {}",
             root.display()
         )));
     }
@@ -446,7 +443,7 @@ fn remote_destination(scope: &LoadedScope, remote: &RemoteFileConfig) -> PathBuf
         .destination
         .as_deref()
         .map(|path| resolve_path_setting(&scope.root, path))
-        .unwrap_or_else(|| scope.root.join("remote"));
+        .unwrap_or_else(|| scope.root.join(LOCAL_STATE_DIR).join("remotes"));
     base.join(&remote.filename)
 }
 
@@ -480,7 +477,10 @@ mod tests {
     use std::path::PathBuf;
     use std::time::{SystemTime, UNIX_EPOCH};
 
-    use super::{expand_home_path, home_dir, load_local_scopes, resolve_global_root};
+    use super::{
+        default_global_root, discover_local_roots, expand_home_path, home_dir, load_local_scopes,
+        resolve_global_root,
+    };
 
     #[test]
     fn global_root_setting_expands_home_directory() {
@@ -488,7 +488,7 @@ mod tests {
         let config_root = root.join("config-root");
         fs::create_dir_all(&config_root).unwrap();
         fs::write(
-            config_root.join(".rata.toml"),
+            config_root.join("rata.toml"),
             "version = 1\n\n[settings]\nglobal_root = \"~/dotfiles/agents/\"\n",
         )
         .unwrap();
@@ -508,6 +508,31 @@ mod tests {
             expand_home_path("~/dotfiles/agents/"),
             home_dir().join("dotfiles/agents/")
         );
+    }
+
+    #[test]
+    fn local_scope_discovery_uses_rata_toml_in_ancestor_directories() {
+        let root = temp_dir("discover-local-roots");
+        let workspace = root.join("workspace");
+        let project = workspace.join("project");
+        let nested = project.join("src");
+
+        fs::create_dir_all(&nested).unwrap();
+        fs::write(workspace.join("rata.toml"), "version = 1\n").unwrap();
+        fs::write(project.join("rata.toml"), "version = 1\n").unwrap();
+        fs::create_dir_all(project.join(".rata")).unwrap();
+
+        assert_eq!(
+            discover_local_roots(&nested),
+            vec![workspace.clone(), project.clone()]
+        );
+
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn default_global_root_uses_hidden_home_directory() {
+        assert_eq!(default_global_root(), home_dir().join(".rata"));
     }
 
     fn temp_dir(label: &str) -> PathBuf {
