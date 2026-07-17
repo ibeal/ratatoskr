@@ -48,6 +48,9 @@ Remote defaults:
 - `destination` defaults to `.rata/remotes/` next to the defining `rata.toml`
 - `ttl` defaults to `-1`, which means never refetch if the cached file already exists
 
+Generated `rata.toml` files start with a Taplo `#:schema` directive pointing at the JSON Schema
+published from this repo, so editor validation can work without additional local setup.
+
 Global root precedence is:
 
 1. `--global-root <path>`

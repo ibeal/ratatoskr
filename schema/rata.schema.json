@@ -1,0 +1,115 @@
+{
+  "$schema": "http://json-schema.org/draft-04/schema#",
+  "title": "Ratatoskr scope config",
+  "description": "Schema for rata.toml files used by Ratatoskr.",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "version": {
+      "type": "integer",
+      "minimum": 1,
+      "description": "Config format version."
+    },
+    "context": {
+      "$ref": "#/definitions/contextConfig"
+    },
+    "profiles": {
+      "type": "object",
+      "description": "Named additive context overlays.",
+      "additionalProperties": {
+        "$ref": "#/definitions/profileConfig"
+      }
+    },
+    "remote_files": {
+      "type": "object",
+      "description": "Remote files to cache locally before resolution.",
+      "additionalProperties": {
+        "$ref": "#/definitions/remoteFileConfig"
+      }
+    },
+    "settings": {
+      "$ref": "#/definitions/settingsConfig"
+    },
+    "stores": {
+      "type": "object",
+      "description": "Named durable data stores.",
+      "additionalProperties": {
+        "type": "string"
+      }
+    }
+  },
+  "required": [
+    "version"
+  ],
+  "definitions": {
+    "contextConfig": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "include": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Context file paths relative to the scope root."
+        }
+      }
+    },
+    "profileConfig": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "description": {
+          "type": "string"
+        },
+        "include": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Context file paths activated by the profile."
+        }
+      }
+    },
+    "remoteFileConfig": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "url": {
+          "type": "string",
+          "description": "Remote URL to fetch."
+        },
+        "filename": {
+          "type": "string",
+          "description": "Destination filename inside the cache directory."
+        },
+        "destination": {
+          "type": "string",
+          "description": "Optional cache directory relative to the scope root."
+        },
+        "ttl": {
+          "type": "integer",
+          "description": "Seconds before refetching. -1 means never refetch an existing cached file."
+        }
+      },
+      "required": [
+        "url",
+        "filename"
+      ]
+    },
+    "settingsConfig": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "allow_missing": {
+          "type": "boolean",
+          "description": "Whether missing referenced files should be tolerated during packing and selective reads."
+        },
+        "global_root": {
+          "type": "string",
+          "description": "Optional override for the active global root."
+        }
+      }
+    }
+  }
+}

@@ -61,8 +61,9 @@ Each root contains:
 
 ```text
 rata.toml
-context/
-stores/
+  .rata/context/
+  context/
+  stores/
 .rata/
   remotes/
 ```
@@ -89,6 +90,10 @@ Remote defaults:
 
 - `destination` defaults to `.rata/remotes/` next to the defining `rata.toml`
 - `ttl` defaults to `-1`, which means never refetch if the cached file already exists
+
+`rata init` also writes a Taplo schema directive at the top of generated `rata.toml` files so
+editors can validate against the schema published in this repo at
+`schema/rata.schema.json`.
 
 Scopes compose in order: global first, then outer local scopes, then inner local scopes. Store names
 override by last writer, so more specific scopes win.
@@ -148,44 +153,50 @@ Running `rata resolve` inside `service-a` will compose:
 
 ## Example layout
 
+`rata init global` creates the global root at `~/.rata/`.
+
+`rata init local` creates only two root-level entries in the current directory:
+
+- `rata.toml`
+- `.rata/`
+
 ```text
 ~/.rata/
   rata.toml
-  context/
-    agents.md
-    preferences.md
-    sdlc.md
   .rata/
+    context/
+      agents.md
+      preferences.md
     remotes/
   stores/
-    decisions/
     memory/
-    tickets/
 
 <repo>/
   rata.toml
-  context/
-    project.md
-    tools.md
-    standards.md
-    review-checklist.md
   .rata/
+    context/
+      project.md
+      tools.md
+      standards.md
+      review-checklist.md
     remotes/
-  stores/
-    decisions/
-    memory/
-    tickets/
+    stores/
+      decisions/
+      memory/
+      tickets/
 ```
 
 ## Example config
 
 ```toml
+#:schema https://raw.githubusercontent.com/ibeal/ratatoskr/main/schema/rata.schema.json
+
 version = 1
 
 [context]
 include = [
-  "context/project.md",
-  "context/tools.md",
+  ".rata/context/project.md",
+  ".rata/context/tools.md",
   ".rata/remotes/architecture.md",
 ]
 
@@ -199,16 +210,16 @@ ttl = -1
 
 [profiles.build]
 description = "Project-specific coding context"
-include = ["context/standards.md"]
+include = [".rata/context/standards.md"]
 
 [profiles.review]
 description = "Project-specific review guidance"
-include = ["context/review-checklist.md"]
+include = [".rata/context/review-checklist.md"]
 
 [stores]
-decisions = "stores/decisions"
-memory = "stores/memory"
-tickets = "stores/tickets"
+decisions = ".rata/stores/decisions"
+memory = ".rata/stores/memory"
+tickets = ".rata/stores/tickets"
 ```
 
 ## Next steps
