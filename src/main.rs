@@ -11,7 +11,7 @@ use std::path::PathBuf;
 
 use clap::Parser;
 
-use crate::cli::{Cli, Commands, InitScope, OutputFormat, ResolveTarget};
+use crate::cli::{Cli, Commands, DoctorTarget, InitScope, OutputFormat, ResolveTarget};
 use crate::errors::Result;
 
 fn main() {
@@ -90,16 +90,43 @@ fn run() -> Result<()> {
             print!("{}", docs::render(topic));
         }
         Commands::Doctor {
+            target,
             cwd,
             global_root,
             profiles,
             format,
         } => {
             let cwd = cwd.unwrap_or(std::env::current_dir()?);
-            let report = doctor::run_doctor(&cwd, global_root.as_deref(), &profiles)?;
-            match format {
-                OutputFormat::Text => print!("{report}"),
-                OutputFormat::Json => println!("{}", serde_json::to_string_pretty(&report)?),
+            match target {
+                None => {
+                    let report = doctor::run_doctor(&cwd, global_root.as_deref(), &profiles)?;
+                    match format {
+                        OutputFormat::Text => print!("{report}"),
+                        OutputFormat::Json => {
+                            println!("{}", serde_json::to_string_pretty(&report)?)
+                        }
+                    }
+                }
+                Some(DoctorTarget::Stores) => {
+                    let report =
+                        doctor::run_stores_doctor(&cwd, global_root.as_deref(), &profiles)?;
+                    match format {
+                        OutputFormat::Text => print!("{report}"),
+                        OutputFormat::Json => {
+                            println!("{}", serde_json::to_string_pretty(&report)?)
+                        }
+                    }
+                }
+                Some(DoctorTarget::Settings) => {
+                    let report =
+                        doctor::run_settings_doctor(&cwd, global_root.as_deref(), &profiles)?;
+                    match format {
+                        OutputFormat::Text => print!("{report}"),
+                        OutputFormat::Json => {
+                            println!("{}", serde_json::to_string_pretty(&report)?)
+                        }
+                    }
+                }
             }
         }
     }

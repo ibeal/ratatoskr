@@ -25,7 +25,7 @@ pub struct ScopeConfig {
     #[serde(default)]
     pub settings: SettingsConfig,
     #[serde(default)]
-    pub stores: BTreeMap<String, String>,
+    pub stores: BTreeMap<String, StoreConfig>,
 }
 
 #[derive(Debug, Clone, Default, Deserialize, Serialize)]
@@ -58,6 +58,45 @@ pub struct SettingsConfig {
     pub allow_missing: Option<bool>,
     #[serde(default)]
     pub global_root: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(untagged)]
+pub enum StoreConfig {
+    Legacy(String),
+    Detailed(StoreDefinition),
+}
+
+impl StoreConfig {
+    pub fn path(&self) -> &str {
+        match self {
+            Self::Legacy(path) => path,
+            Self::Detailed(store) => &store.path,
+        }
+    }
+
+    pub fn composition(&self) -> Option<StoreComposition> {
+        match self {
+            Self::Legacy(_) => None,
+            Self::Detailed(store) => store.composition,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct StoreDefinition {
+    pub path: String,
+    #[serde(default)]
+    pub composition: Option<StoreComposition>,
+}
+
+#[derive(Debug, Clone, Copy, Default, Deserialize, Serialize, Eq, PartialEq)]
+#[serde(rename_all = "kebab-case")]
+pub enum StoreComposition {
+    #[default]
+    Replace,
+    GlobalFirst,
+    LocalFirst,
 }
 
 #[derive(Debug, Clone)]

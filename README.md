@@ -84,7 +84,8 @@ you can see global and local values and where later scopes overrode earlier ones
 Remote files live in a separate `[remote_files]` section. They are fetched on a best-effort basis
 before resolution. Fetch failures never raise on their own. If you reference a cached remote file
 from `[context].include` and want that absence to fail, set `allow_missing = false`.
-`rata doctor` reports remote cache status and missing context files explicitly.
+`rata doctor` reports health, active layers, and errors. Use `rata doctor stores` for store
+composition diagnostics and `rata doctor settings` for effective settings plus their layers.
 
 Remote defaults:
 
@@ -95,8 +96,11 @@ Remote defaults:
 editors can validate against the schema published in this repo at
 `schema/rata.schema.json`.
 
-Scopes compose in order: global first, then outer local scopes, then inner local scopes. Store names
-override by last writer, so more specific scopes win.
+Scopes compose in order: global first, then outer local scopes, then inner local scopes. Stores
+default to `replace`, so existing configs retain their behavior. A store can instead expose all
+matching layers using `global-first` or `local-first`; the nearest declaration that specifies a
+composition selects it, allowing a local path declaration to inherit a global policy. The resolver
+always returns paths in that order.
 
 Profiles compose across scopes too. If global, `ap/`, and project scopes all define `build`, then
 `rata resolve --profile build` activates all of them in scope order.
@@ -106,12 +110,15 @@ Profiles compose across scopes too. If global, `ap/`, and project scopes all def
 ```text
 rata init global
 rata init local
+rata --version
 rata resolve summary
 rata resolve stores
 rata resolve --global-root ~/src/agent-context
 rata resolve stores --format json
 rata resolve --format json
 rata doctor
+rata doctor stores
+rata doctor settings
 rata doctor --format json
 rata pack
 rata only profile build
@@ -218,9 +225,14 @@ include = [".rata/context/review-checklist.md"]
 
 [stores]
 decisions = ".rata/stores/decisions"
-memory = ".rata/stores/memory"
+memory = { path = ".rata/stores/memory", composition = "local-first" }
 tickets = ".rata/stores/tickets"
 ```
+
+Store values may be a path string or an inline table with `path` and an optional `composition`.
+When no scope specifies a composition, it defaults to `replace`. Composition controls only which
+layers are returned and their order; individual store workflows decide how to handle duplicate
+content.
 
 ## Next steps
 

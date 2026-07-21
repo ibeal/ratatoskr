@@ -1,11 +1,17 @@
 use std::path::PathBuf;
 
-use clap::{Parser, Subcommand, ValueEnum};
+use clap::{ArgAction, Parser, Subcommand, ValueEnum};
+
+const VERSION: &str = concat!(env!("CARGO_PKG_VERSION"), " ", env!("RATA_GIT_SHA"));
 
 #[derive(Debug, Parser)]
 #[command(name = "rata")]
 #[command(about = "Context root discovery and scaffolding for AI agents")]
+#[command(version = VERSION, disable_version_flag = true)]
 pub struct Cli {
+    /// Print the version and Git SHA.
+    #[arg(short = 'v', long = "version", action = ArgAction::Version)]
+    _version: bool,
     #[command(subcommand)]
     pub command: Commands,
 }
@@ -72,19 +78,21 @@ pub enum Commands {
         #[arg(value_enum)]
         topic: DocsTopic,
     },
-    /// Inspect remote cache health, missing files, and settings composition.
+    /// Diagnose the active context stack.
     Doctor {
+        #[command(subcommand)]
+        target: Option<DoctorTarget>,
         /// Resolve relative to this directory instead of the current working directory.
-        #[arg(long)]
+        #[arg(long, global = true)]
         cwd: Option<PathBuf>,
         /// Override the global rata root for this invocation.
-        #[arg(long)]
+        #[arg(long, global = true)]
         global_root: Option<PathBuf>,
         /// Apply one or more additive context profiles in the order provided.
-        #[arg(long = "profile")]
+        #[arg(long = "profile", global = true)]
         profiles: Vec<String>,
         /// Choose human-readable or JSON output.
-        #[arg(long, value_enum, default_value_t = OutputFormat::Text)]
+        #[arg(long, global = true, value_enum, default_value_t = OutputFormat::Text)]
         format: OutputFormat,
     },
 }
@@ -116,6 +124,14 @@ pub enum ResolveTarget {
     #[default]
     Summary,
     Stores,
+}
+
+#[derive(Debug, Subcommand)]
+pub enum DoctorTarget {
+    /// Show each store layer and its effective composition policy.
+    Stores,
+    /// Show effective settings and the settings contributed by every layer.
+    Settings,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, ValueEnum)]

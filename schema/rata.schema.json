@@ -34,7 +34,15 @@
       "type": "object",
       "description": "Named durable data stores.",
       "additionalProperties": {
-        "type": "string"
+        "oneOf": [
+          {
+            "type": "string",
+            "description": "Store path relative to the scope root. Equivalent to composition = replace."
+          },
+          {
+            "$ref": "#/definitions/storeConfig"
+          }
+        ]
       }
     }
   },
@@ -68,6 +76,27 @@
             "type": "string"
           },
           "description": "Context file paths activated by the profile."
+        }
+      }
+    },
+    "storeConfig": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "path"
+      ],
+      "properties": {
+        "path": {
+          "type": "string",
+          "description": "Store path relative to the scope root."
+        },
+        "composition": {
+          "enum": [
+            "replace",
+            "global-first",
+            "local-first"
+          ],
+          "description": "How paths from matching scopes are resolved. The nearest declaration that sets this value controls it; it defaults to replace when no declaration sets one."
         }
       }
     },

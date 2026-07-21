@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 
 use serde::Serialize;
 
-use crate::config::{self, LoadedScope, RemoteFileStatus};
+use crate::config::{self, LoadedScope, RemoteFileStatus, StoreComposition};
 use crate::errors::{RatatoskrError, Result};
 
 #[derive(Debug, Serialize)]
@@ -21,7 +21,7 @@ pub struct ResolvedManifest {
     pub scopes: Vec<ResolvedScope>,
     pub context_files: Vec<PathBuf>,
     pub context_entries: Vec<ResolvedContextEntry>,
-    pub stores: BTreeMap<String, PathBuf>,
+    pub stores: BTreeMap<String, ResolvedStore>,
     pub remote_files: Vec<RemoteFileStatus>,
 }
 
@@ -31,7 +31,7 @@ pub struct ResolvedStores {
     pub global_root: Option<PathBuf>,
     pub local_root: Option<PathBuf>,
     pub local_roots: Vec<PathBuf>,
-    pub stores: BTreeMap<String, PathBuf>,
+    pub stores: BTreeMap<String, ResolvedStore>,
 }
 
 #[derive(Debug, Serialize)]
@@ -49,7 +49,19 @@ pub struct ResolvedScope {
     pub context_files: Vec<PathBuf>,
     pub context_entries: Vec<ResolvedContextEntry>,
     pub available_profiles: Vec<ScopeProfile>,
-    pub stores: BTreeMap<String, PathBuf>,
+    pub stores: BTreeMap<String, ResolvedStoreLayer>,
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub struct ResolvedStoreLayer {
+    pub path: PathBuf,
+    #[serde(skip_serializing)]
+    pub composition: Option<StoreComposition>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct ResolvedStore {
+    pub paths: Vec<PathBuf>,
 }
 
 #[derive(Debug, Serialize)]
@@ -123,7 +135,7 @@ pub fn inspect_manifest(
     let mut scopes = Vec::new();
     let mut context_files = Vec::new();
     let mut context_entries = Vec::new();
-    let mut stores = BTreeMap::new();
+    let mut store_layers = BTreeMap::<String, Vec<ResolvedStoreLayer>>::new();
     let mut available_profiles = BTreeMap::<String, BTreeSet<String>>::new();
     let mut matched_profiles = BTreeSet::new();
 
@@ -142,8 +154,11 @@ pub fn inspect_manifest(
             &mut context_entries,
             resolved.context_entries.iter().cloned(),
         );
-        for (name, path) in &resolved.stores {
-            stores.insert(name.clone(), path.clone());
+        for (name, store) in &resolved.stores {
+            store_layers
+                .entry(name.clone())
+                .or_default()
+                .push(store.clone());
         }
         scopes.push(resolved);
     }
@@ -163,8 +178,11 @@ pub fn inspect_manifest(
             &mut context_entries,
             resolved.context_entries.iter().cloned(),
         );
-        for (name, path) in &resolved.stores {
-            stores.insert(name.clone(), path.clone());
+        for (name, store) in &resolved.stores {
+            store_layers
+                .entry(name.clone())
+                .or_default()
+                .push(store.clone());
         }
         scopes.push(resolved);
     }
@@ -209,6 +227,8 @@ pub fn inspect_manifest(
             }
         }
     }
+
+    let stores = compose_stores(store_layers);
 
     Ok(ManifestInspection {
         manifest: ResolvedManifest {
@@ -310,7 +330,15 @@ fn resolve_scope(
         .config
         .stores
         .iter()
-        .map(|(name, relative_path)| (name.clone(), scope.root.join(relative_path)))
+        .map(|(name, store)| {
+            (
+                name.clone(),
+                ResolvedStoreLayer {
+                    path: scope.root.join(store.path()),
+                    composition: store.composition(),
+                },
+            )
+        })
         .collect();
 
     ResolvedScope {
@@ -367,8 +395,11 @@ impl Display for ResolvedManifest {
             writeln!(f, "  - {}", path.display())?;
         }
         writeln!(f, "stores:")?;
-        for (name, path) in &self.stores {
-            writeln!(f, "  - {} => {}", name, path.display())?;
+        for (name, store) in &self.stores {
+            writeln!(f, "  - {name}")?;
+            for path in &store.paths {
+                writeln!(f, "    - {}", path.display())?;
+            }
         }
         writeln!(f, "remote_files:")?;
         if self.remote_files.is_empty() {
@@ -406,8 +437,11 @@ impl Display for ResolvedStores {
             }
         }
         writeln!(f, "stores:")?;
-        for (name, path) in &self.stores {
-            writeln!(f, "  - {} => {}", name, path.display())?;
+        for (name, store) in &self.stores {
+            writeln!(f, "  - {name}")?;
+            for path in &store.paths {
+                writeln!(f, "    - {}", path.display())?;
+            }
         }
 
         Ok(())
@@ -436,6 +470,38 @@ fn display_path(path: Option<&PathBuf>) -> String {
     }
 }
 
+fn compose_stores(
+    layers: BTreeMap<String, Vec<ResolvedStoreLayer>>,
+) -> BTreeMap<String, ResolvedStore> {
+    layers
+        .into_iter()
+        .map(|(name, layers)| {
+            let composition = effective_store_composition(&layers);
+            let paths = match composition {
+                StoreComposition::Replace => layers
+                    .last()
+                    .map(|layer| vec![layer.path.clone()])
+                    .unwrap_or_default(),
+                StoreComposition::GlobalFirst => {
+                    layers.into_iter().map(|layer| layer.path).collect()
+                }
+                StoreComposition::LocalFirst => {
+                    layers.into_iter().rev().map(|layer| layer.path).collect()
+                }
+            };
+            (name, ResolvedStore { paths })
+        })
+        .collect()
+}
+
+pub fn effective_store_composition(layers: &[ResolvedStoreLayer]) -> StoreComposition {
+    layers
+        .iter()
+        .filter_map(|layer| layer.composition)
+        .last()
+        .unwrap_or_default()
+}
+
 fn remote_status_label(remote: &RemoteFileStatus) -> String {
     match &remote.detail {
         Some(detail) => format!(
@@ -461,7 +527,74 @@ mod tests {
     use std::path::{Path, PathBuf};
     use std::time::{SystemTime, UNIX_EPOCH};
 
-    use super::{inspect_manifest, resolve_manifest};
+    use super::{inspect_manifest, resolve_manifest, resolve_stores};
+
+    #[test]
+    fn resolve_stores_composes_layers_using_the_nearest_declaration() {
+        let root = temp_dir("store-composition");
+        let global_root = root.join("global");
+        let outer_root = root.join("workspace");
+        let project_root = outer_root.join("project");
+
+        write_config(
+            &global_root,
+            r#"
+version = 1
+
+[stores]
+skills = { path = "stores/skills", composition = "global-first" }
+memory = { path = "stores/memory", composition = "global-first" }
+tickets = "stores/tickets"
+"#,
+        );
+        write_config(
+            &outer_root,
+            r#"
+version = 1
+
+[stores]
+skills = { path = ".rata/stores/skills", composition = "global-first" }
+memory = { path = ".rata/stores/memory" }
+tickets = ".rata/stores/tickets"
+"#,
+        );
+        write_config(
+            &project_root,
+            r#"
+version = 1
+
+[stores]
+skills = { path = ".rata/stores/skills", composition = "local-first" }
+memory = { path = ".rata/stores/memory" }
+tickets = ".rata/stores/tickets"
+"#,
+        );
+
+        let stores = resolve_stores(&project_root, Some(&global_root), &[]).unwrap();
+
+        assert_eq!(
+            stores.stores["skills"].paths,
+            vec![
+                project_root.join(".rata/stores/skills"),
+                outer_root.join(".rata/stores/skills"),
+                global_root.join("stores/skills"),
+            ]
+        );
+        assert_eq!(
+            stores.stores["memory"].paths,
+            vec![
+                global_root.join("stores/memory"),
+                outer_root.join(".rata/stores/memory"),
+                project_root.join(".rata/stores/memory"),
+            ]
+        );
+        assert_eq!(
+            stores.stores["tickets"].paths,
+            vec![project_root.join(".rata/stores/tickets")]
+        );
+
+        fs::remove_dir_all(root).unwrap();
+    }
 
     #[test]
     fn resolve_manifest_filters_missing_files_when_allowed() {
@@ -537,6 +670,11 @@ allow_missing = true
         }
         fs::create_dir_all(&path).unwrap();
         path
+    }
+
+    fn write_config(root: &Path, contents: &str) {
+        fs::create_dir_all(root).unwrap();
+        fs::write(root.join("rata.toml"), contents).unwrap();
     }
 
     #[allow(dead_code)]
