@@ -10,8 +10,13 @@ const VERSION: &str = concat!(env!("CARGO_PKG_VERSION"), " ", env!("RATA_GIT_SHA
 #[command(version = VERSION, disable_version_flag = true)]
 pub struct Cli {
     /// Print the version and Git SHA.
-    #[arg(short = 'v', long = "version", action = ArgAction::Version)]
-    _version: bool,
+    #[arg(
+        short = 'v',
+        long = "version",
+        action = ArgAction::Version,
+        required = false
+    )]
+    _version: Option<bool>,
     #[command(subcommand)]
     pub command: Commands,
 }

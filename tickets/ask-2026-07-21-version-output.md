@@ -37,3 +37,5 @@ Version output makes installed binaries traceable without adding a runtime Git d
   expose it through the requested lowercase `-v` and `--version` flags.
 - Verified both flags print the package version and embedded full SHA, alongside `cargo fmt`,
   `cargo test`, `cargo check`, help output, and diff checks.
+- Corrected the custom Clap version flag so its parser-only backing field is explicitly optional;
+  this must not be treated as context configuration or shown by `rata doctor`.
