@@ -105,6 +105,82 @@ always returns paths in that order.
 Profiles compose across scopes too. If global, `ap/`, and project scopes all define `build`, then
 `rata resolve --profile build` activates all of them in scope order.
 
+## Nodes, signatures, and outlines
+
+Every `.md` file in a store is a **node** addressed by a store-relative ref without the extension:
+`memory:containerized-agents`, `memory:nix/patterns`. A node has a one-line **signature** and a
+**body**, and `rata outline` renders signatures only — a bird's-eye view you can step into.
+
+The index is computed from a directory scan on every run. Nothing is written to disk, so no index can
+go stale: add a file and it shows up in the next `rata outline`.
+
+Signatures resolve through a fallback ladder, taking the first rung that yields something:
+
+1. the optional frontmatter `description:` key
+2. the first sentence of the body after the H1
+3. the H1 heading text
+4. the humanized filename
+
+Frontmatter is never required. A file with none still gets a signature, which is why existing stores
+need no backfill. `rata doctor nodes` reports the rung each node resolved at, so thin signatures are
+visible without being mandatory to fix.
+
+Frontmatter is a small, fixed schema:
+
+```markdown
+---
+description: One line describing this file
+tags: [nix, agents]
+---
+
+# Heading
+```
+
+`tags` is parsed and validated but not yet queryable; it is reserved so files written today do not
+need rewriting when tag selection lands. Unrecognized keys are reported by `rata doctor nodes`
+rather than ignored.
+
+## Who decides what gets packed
+
+Frontmatter introduces a second place that describes a file, alongside `rata.toml`. Two sources of
+truth are fine, but only if the split is stated and enforced:
+
+> **Frontmatter can never change whether a file is packed.**
+
+- **`rata.toml` owns topology and eagerness** — which stores exist, where they live, what is a root,
+  what each profile pulls. Facts that cannot be derived by scanning.
+- **Frontmatter owns self-description** — `description`, later `tags`. Facts only the file knows.
+  Never location, never profile membership.
+
+The failure mode this prevents is a file opting *itself* into always-on context, so that adding a
+memory silently bloats every session. Eagerness stays centralized. `rata doctor` **fails** — exit
+code 2, not a warning — when it finds a frontmatter key that would affect eagerness, because the
+symptom of a violation (context bloat) appears far from its cause.
+
+Symmetrically, `rata.toml` never enumerates individual files *inside* a store: it names the store and
+the contents self-describe. That is what keeps indexes generated rather than maintained.
+
+One crossing is explicitly allowed. A **profile may reference a tag as a predicate** — e.g.
+`store = "memory", tag = "nix"` — because the curator still decides; the tag is only the filter
+expression. What is forbidden is a *file* pulling itself into a profile. (Inert until tags ship.)
+
+### One grouping, two selectors
+
+Stores, profiles, and tags are not three overlapping grouping mechanisms:
+
+- **stores** are the filesystem — where bytes live. Not a selector.
+- **profiles** select eagerly, for `pack`.
+- **tags** select lazily, for `only` and `outline`.
+
+The test for "should this be a store" is: *would you ever mount, sync, scope, or write to it
+independently?* If not, it is a tag. Keep stores few and defined by where bytes must live, never by
+subject matter; tags then do cross-cutting classification, including across stores.
+
+Directory placement is self-evident and an unambiguous write target — "a new decision goes in
+`decisions`" is checkable with `ls`. Tag correctness is not: a mis-tag makes a file *invisible*
+rather than merely misfiled, which is a strictly worse failure. That asymmetry is why subject-matter
+stores are not collapsed into one tagged store.
+
 ## Current commands
 
 ```text
@@ -117,9 +193,14 @@ rata resolve --global-root ~/src/agent-context
 rata resolve stores --format json
 rata resolve --format json
 rata doctor
+rata doctor nodes
+rata doctor nodes memory
 rata doctor stores
 rata doctor settings
 rata doctor --format json
+rata outline
+rata outline memory
+rata outline memory --depth 1
 rata pack
 rata only profile build
 rata only scope local

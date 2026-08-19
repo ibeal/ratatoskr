@@ -4,8 +4,8 @@
 |---|---|
 | **Source** | plain ask |
 | **Spec** | authored here |
-| **Phase** | intake |
-| **PR** | — |
+| **Phase** | build |
+| **PR** | — (local stacked commit) |
 | **Project(s)** | ratatoskr, dotfiles/agents |
 | **Created** | 2026-08-19 |
 | **Updated** | 2026-08-19 |
@@ -97,6 +97,27 @@ the docs state the invariant in one sentence.
 ### Build log
 
 - 2026-08-19: Spec authored from design discussion. Not started.
+- 2026-08-19: Built alongside the signature-ladder slice, as recommended.
+  - **Enforcement:** `rata doctor` now reads the frontmatter of every resolved context file *and*
+    every store node, and reports a `frontmatter_eagerness` error for any key on the forbidden list
+    (`always`, `context`, `eager`, `include`, `pack`, `path`, `profile`, `profiles`, `root`,
+    `scope`, `store`). Checking context files too matters — the invariant is about any markdown
+    rata reads, not only store contents.
+  - **`doctor` now exits non-zero.** It previously always exited 0, which made "fails, not warns"
+    unachievable. Any unhealthy report (including the pre-existing missing-context-file and
+    remote-fetch errors) now exits **2**, so a hook or CI step can gate on it. This is a behaviour
+    change to an existing command, deliberate and required by the AC.
+  - **Docs:** the invariant, the allowed tag-as-predicate crossing, and the one-grouping-plus-two-
+    selectors model are stated in `README.md` and `docs/agent-usage.md`, and the `rata.toml` JSON
+    schema now carries it in its top-level, `profiles`, and `stores` descriptions — so it shows up
+    in editor tooltips at the point of temptation.
+
+### Not done (deliberately, and why)
+
+- **`context/rata.md`** and a **`decisions` store record** both live in `~/dotfiles/agents`, which
+  this series is not touching (2026-08-19 decision: ratatoskr only). The conceptual model is
+  recorded in this repo's `README.md` instead. Copying it into the `decisions` store and adding the
+  invariant to `context/rata.md` are left for Ian.
 
 ### Open questions
 

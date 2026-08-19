@@ -4,8 +4,8 @@
 |---|---|
 | **Source** | plain ask |
 | **Spec** | authored here |
-| **Phase** | intake |
-| **PR** | — |
+| **Phase** | build |
+| **PR** | — (local stacked commit) |
 | **Project(s)** | ratatoskr |
 | **Created** | 2026-08-19 |
 | **Updated** | 2026-08-19 |
@@ -70,7 +70,8 @@ frontmatter added anywhere. Adding a new `.md` file makes it appear with no othe
   into its H1). That is exactly why `description:` must be optional — the ladder has to produce
   something useful for files as they already exist, with zero backfill.
 - **Recommendation:** go.
-- **Human's decision:** pending confirmation of these AC.
+- **Human's decision:** 2026-08-19 — go. AC confirmed as written; build the series in order, as
+  stacked local commits rather than PRs.
 
 ### Decisions carried in from design
 
@@ -86,10 +87,29 @@ frontmatter added anywhere. Adding a new `.md` file makes it appear with no othe
 ### Build log
 
 - 2026-08-19: Spec authored from design discussion. Not started.
+- 2026-08-19: Built. New `src/frontmatter.rs` (optional `description:` + reserved `tags:`, never
+  fails — issues surface in `doctor`) and `src/outline.rs` (directory scan → nodes → signature
+  ladder → `rata outline [<store>] [--depth N]`). `rata doctor nodes [<store>]` reports the tier
+  each node resolved at plus a per-tier count.
+- 2026-08-19: Two ladder refinements came out of running it against the real stores, not from the
+  spec:
+  - **List continuations are not prose.** `memory/containerized-agents.md` is entirely a bullet
+    list; its wrapped continuation lines were being read as the first sentence, yielding a
+    mid-clause fragment. Indented lines before any prose has started are now treated as belonging
+    to the structure above them, so that file correctly falls through to the heading tier.
+  - **Headings that restate the filename get the prefix stripped.** The tickets store's H1
+    convention is `<id> — <title>`, which rendered as `<ref> — <ref> — <title>`. Exact-match
+    redundancy detection did not catch it, so the heading tier now drops a leading segment that
+    squashes equal to the ref.
+- 2026-08-19: Store layers are deduped before scanning — a root that is both the global root and a
+  local scope (which is exactly `~/dotfiles/agents`) otherwise contributes every layer twice.
 
 ### Open questions
 
-- Does ladder tier 2 (first sentence) need a length cap, or is truncation at render time enough?
+- ~~Does ladder tier 2 (first sentence) need a length cap, or is truncation at render time
+  enough?~~ **Truncation at render time.** The ladder keeps the full sentence (so JSON consumers
+  and later slices get the real text); the text renderer truncates at 120 chars on a word boundary.
+  A cap in the ladder would silently lose data that has no other source.
 
 ### Checkpoints (memory boundaries)
 

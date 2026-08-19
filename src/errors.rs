@@ -10,11 +10,16 @@ pub enum RatatoskrError {
     ReadConfig(PathBuf, io::Error),
     ParseConfig(PathBuf, toml::de::Error),
     ReadContextFile(PathBuf, io::Error),
+    ReadStoreDir(PathBuf, io::Error),
     WriteRemoteFile(PathBuf, io::Error),
     SerializeJson(serde_json::Error),
     InvalidRoot(String),
     AlreadyExists(PathBuf),
     UnknownProfiles(Vec<String>),
+    UnknownStore {
+        name: String,
+        available: Vec<String>,
+    },
 }
 
 impl Display for RatatoskrError {
@@ -34,6 +39,13 @@ impl Display for RatatoskrError {
                     path.display()
                 )
             }
+            Self::ReadStoreDir(path, source) => {
+                write!(
+                    f,
+                    "failed to read store directory {}: {source}",
+                    path.display()
+                )
+            }
             Self::WriteRemoteFile(path, source) => {
                 write!(
                     f,
@@ -48,6 +60,17 @@ impl Display for RatatoskrError {
             }
             Self::UnknownProfiles(profiles) => {
                 write!(f, "unknown profiles: {}", profiles.join(", "))
+            }
+            Self::UnknownStore { name, available } => {
+                write!(
+                    f,
+                    "unknown store `{name}`; available: {}",
+                    if available.is_empty() {
+                        "<none>".to_string()
+                    } else {
+                        available.join(", ")
+                    }
+                )
             }
         }
     }

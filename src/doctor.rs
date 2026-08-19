@@ -1,12 +1,17 @@
 use std::collections::BTreeMap;
 use std::fmt::{self, Display};
+use std::fs;
 use std::path::{Path, PathBuf};
 
 use serde::Serialize;
 
 use crate::config::{EffectiveSettings, RemoteStatusKind, SettingsLayer, StoreComposition};
 use crate::errors::Result;
-use crate::resolve::{self, ContextSource, MissingContextFile, ResolvedStoreLayer};
+use crate::frontmatter::{self, FrontmatterIssue};
+use crate::outline::{self, Node, SignatureTier};
+use crate::resolve::{
+    self, ContextSource, MissingContextFile, ResolvedManifest, ResolvedStoreLayer,
+};
 
 #[derive(Debug, Serialize)]
 pub struct DoctorReport {
@@ -38,6 +43,29 @@ pub enum DoctorError {
         scope_root: PathBuf,
         source: ContextSource,
     },
+    /// A file trying to decide its own eagerness. `rata.toml` owns topology and eagerness;
+    /// frontmatter owns self-description. This is an error, not a warning, because the symptom
+    /// (context bloat) shows up far from the cause.
+    FrontmatterEagerness { path: PathBuf, key: String },
+}
+
+#[derive(Debug, Serialize)]
+pub struct DoctorNodesReport {
+    pub healthy: bool,
+    pub tier_counts: Vec<DoctorTierCount>,
+    pub stores: Vec<DoctorNodeStore>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct DoctorTierCount {
+    pub tier: SignatureTier,
+    pub count: usize,
+}
+
+#[derive(Debug, Serialize)]
+pub struct DoctorNodeStore {
+    pub name: String,
+    pub nodes: Vec<Node>,
 }
 
 #[derive(Debug, Serialize)]
@@ -78,10 +106,11 @@ pub fn run_doctor(
     selected_profiles: &[String],
 ) -> Result<DoctorReport> {
     let inspection = resolve::inspect_manifest(cwd, global_root_override, selected_profiles)?;
-    let errors = doctor_errors(
+    let mut errors = doctor_errors(
         &inspection.manifest.remote_files,
         &inspection.missing_context_files,
     );
+    errors.extend(eagerness_violations(&inspection.manifest)?);
 
     Ok(DoctorReport {
         healthy: errors.is_empty(),
@@ -95,6 +124,46 @@ pub fn run_doctor(
             })
             .collect(),
         errors,
+    })
+}
+
+/// Report where every node's signature came from, so thin signatures are visible without
+/// `description:` ever being mandatory.
+pub fn run_nodes_doctor(
+    cwd: &Path,
+    global_root_override: Option<&Path>,
+    store: Option<&str>,
+) -> Result<DoctorNodesReport> {
+    let outline = outline::build_outline(cwd, global_root_override, store, None)?;
+    let mut tier_counts = BTreeMap::<&'static str, (SignatureTier, usize)>::new();
+    let mut healthy = true;
+
+    for store in &outline.stores {
+        for node in &store.nodes {
+            let entry = tier_counts
+                .entry(node.tier.label())
+                .or_insert((node.tier, 0));
+            entry.1 += 1;
+            if node.has_eagerness_key() {
+                healthy = false;
+            }
+        }
+    }
+
+    Ok(DoctorNodesReport {
+        healthy,
+        tier_counts: tier_counts
+            .into_values()
+            .map(|(tier, count)| DoctorTierCount { tier, count })
+            .collect(),
+        stores: outline
+            .stores
+            .into_iter()
+            .map(|store| DoctorNodeStore {
+                name: store.name,
+                nodes: store.nodes,
+            })
+            .collect(),
     })
 }
 
@@ -172,6 +241,44 @@ fn doctor_errors(
     errors
 }
 
+/// Enforce the one invariant frontmatter must never break: it cannot change whether a file is
+/// packed. Checked over both context files and store nodes, since either could try it.
+fn eagerness_violations(manifest: &ResolvedManifest) -> Result<Vec<DoctorError>> {
+    let mut errors = Vec::new();
+
+    for entry in &manifest.context_entries {
+        let Ok(contents) = fs::read_to_string(&entry.path) else {
+            // A file that cannot be read is already reported as a missing context file.
+            continue;
+        };
+        errors.extend(violations_from(
+            &entry.path,
+            &frontmatter::parse(&contents).0.issues,
+        ));
+    }
+
+    for store in outline::outline_stores(&manifest.stores, None, None)? {
+        for node in store.nodes {
+            errors.extend(violations_from(&node.path, &node.issues));
+        }
+    }
+
+    Ok(errors)
+}
+
+fn violations_from(path: &Path, issues: &[FrontmatterIssue]) -> Vec<DoctorError> {
+    issues
+        .iter()
+        .filter_map(|issue| match issue {
+            FrontmatterIssue::EagernessKey { key } => Some(DoctorError::FrontmatterEagerness {
+                path: path.to_path_buf(),
+                key: key.clone(),
+            }),
+            _ => None,
+        })
+        .collect()
+}
+
 fn effective_composition(layers: &[DoctorStoreLayer]) -> StoreComposition {
     let layers = layers
         .iter()
@@ -207,6 +314,57 @@ impl Display for DoctorReport {
             }
         }
         Ok(())
+    }
+}
+
+impl Display for DoctorNodesReport {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        writeln!(f, "healthy: {}", self.healthy)?;
+        writeln!(f, "tiers:")?;
+        if self.tier_counts.is_empty() {
+            writeln!(f, "  - <none>")?;
+        } else {
+            for tier in &self.tier_counts {
+                writeln!(f, "  - {}: {}", tier.tier.label(), tier.count)?;
+            }
+        }
+        writeln!(f, "nodes:")?;
+        if self.stores.iter().all(|store| store.nodes.is_empty()) {
+            return writeln!(f, "  - <none>");
+        }
+        for store in &self.stores {
+            for node in &store.nodes {
+                writeln!(
+                    f,
+                    "  - {}:{} [{}] {}",
+                    store.name,
+                    node.reference,
+                    node.tier.label(),
+                    node.path.display(),
+                )?;
+                for issue in &node.issues {
+                    writeln!(f, "    {}", issue_label(issue))?;
+                }
+            }
+        }
+        Ok(())
+    }
+}
+
+fn issue_label(issue: &FrontmatterIssue) -> String {
+    match issue {
+        FrontmatterIssue::EagernessKey { key } => format!(
+            "error: frontmatter key `{key}` would affect eagerness; rata.toml owns that, not the file"
+        ),
+        FrontmatterIssue::UnknownKey { key } => {
+            format!("warn: unrecognized frontmatter key `{key}`")
+        }
+        FrontmatterIssue::Unterminated => {
+            "warn: frontmatter block is never closed; treated as body".to_string()
+        }
+        FrontmatterIssue::Malformed { line } => {
+            format!("warn: unparsable frontmatter line `{line}`")
+        }
     }
 }
 
@@ -317,6 +475,11 @@ fn display_error(f: &mut fmt::Formatter<'_>, error: &DoctorError) -> fmt::Result
             scope_root.display(),
             source_label(source),
         )?,
+        DoctorError::FrontmatterEagerness { path, key } => writeln!(
+            f,
+            "  - frontmatter key `{key}` in {} would affect eagerness; rata.toml owns that, not the file",
+            path.display(),
+        )?,
     }
     Ok(())
 }
@@ -354,7 +517,7 @@ mod tests {
 
     use crate::config::StoreComposition;
 
-    use super::{run_doctor, run_settings_doctor, run_stores_doctor};
+    use super::{DoctorError, run_doctor, run_settings_doctor, run_stores_doctor};
 
     #[test]
     fn doctor_subcommands_expose_detailed_store_and_settings_diagnostics() {
@@ -403,6 +566,68 @@ skills = { path = ".rata/stores/skills" }
         assert_eq!(settings.layers.len(), 2);
         assert_eq!(settings.layers[0].allow_missing, Some(false));
         assert_eq!(settings.layers[1].allow_missing, Some(true));
+
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn doctor_rejects_frontmatter_that_would_decide_its_own_eagerness() {
+        let root = temp_dir("doctor-eagerness");
+        let global_root = root.join("global");
+        fs::create_dir_all(global_root.join("memory")).unwrap();
+        write_config(
+            &global_root,
+            r#"
+version = 1
+
+[context]
+include = ["AGENTS.md"]
+
+[stores]
+memory = "memory"
+"#,
+        );
+        fs::write(global_root.join("AGENTS.md"), "# Agents\n\nProse.\n").unwrap();
+        // Self-description is fine.
+        fs::write(
+            global_root.join("memory/allowed.md"),
+            "---\ndescription: A memory\ntags: [nix]\n---\n# Allowed\n",
+        )
+        .unwrap();
+
+        let report = run_doctor(&global_root, Some(&global_root), &[]).unwrap();
+        assert!(report.healthy, "{:?}", report.errors);
+
+        // Opting itself into a profile is not.
+        fs::write(
+            global_root.join("memory/sneaky.md"),
+            "---\ndescription: A memory\nprofile: build\n---\n# Sneaky\n",
+        )
+        .unwrap();
+
+        let report = run_doctor(&global_root, Some(&global_root), &[]).unwrap();
+        assert!(!report.healthy);
+        assert!(report.errors.iter().any(|error| matches!(
+            error,
+            DoctorError::FrontmatterEagerness { key, path }
+                if key == "profile" && path.ends_with("sneaky.md")
+        )));
+
+        // A context file is held to the same rule.
+        fs::write(
+            global_root.join("AGENTS.md"),
+            "---\ninclude: [everything.md]\n---\n# Agents\n",
+        )
+        .unwrap();
+        let report = run_doctor(&global_root, Some(&global_root), &[]).unwrap();
+        assert_eq!(
+            report
+                .errors
+                .iter()
+                .filter(|error| matches!(error, DoctorError::FrontmatterEagerness { .. }))
+                .count(),
+            2
+        );
 
         fs::remove_dir_all(root).unwrap();
     }

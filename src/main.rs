@@ -3,25 +3,36 @@ mod config;
 mod docs;
 mod doctor;
 mod errors;
+mod frontmatter;
 mod init;
+mod outline;
 mod pack;
 mod resolve;
+#[cfg(test)]
+mod test_support;
 
 use std::path::PathBuf;
+use std::process::ExitCode;
 
 use clap::Parser;
 
 use crate::cli::{Cli, Commands, DoctorTarget, InitScope, OutputFormat, ResolveTarget};
 use crate::errors::Result;
 
-fn main() {
-    if let Err(err) = run() {
-        eprintln!("error: {err}");
-        std::process::exit(1);
+/// `doctor` exits non-zero when it finds problems, so a hook or CI step can gate on it.
+const UNHEALTHY: u8 = 2;
+
+fn main() -> ExitCode {
+    match run() {
+        Ok(code) => code,
+        Err(err) => {
+            eprintln!("error: {err}");
+            ExitCode::FAILURE
+        }
     }
 }
 
-fn run() -> Result<()> {
+fn run() -> Result<ExitCode> {
     let cli = Cli::parse();
 
     match cli.command {
@@ -86,6 +97,21 @@ fn run() -> Result<()> {
                 OutputFormat::Json => println!("{}", serde_json::to_string_pretty(&bundle)?),
             }
         }
+        Commands::Outline {
+            store,
+            depth,
+            cwd,
+            global_root,
+            format,
+        } => {
+            let cwd = cwd.unwrap_or(std::env::current_dir()?);
+            let report =
+                outline::build_outline(&cwd, global_root.as_deref(), store.as_deref(), depth)?;
+            match format {
+                OutputFormat::Text => print!("{report}"),
+                OutputFormat::Json => println!("{}", serde_json::to_string_pretty(&report)?),
+            }
+        }
         Commands::Docs { topic } => {
             print!("{}", docs::render(topic));
         }
@@ -105,6 +131,22 @@ fn run() -> Result<()> {
                         OutputFormat::Json => {
                             println!("{}", serde_json::to_string_pretty(&report)?)
                         }
+                    }
+                    if !report.healthy {
+                        return Ok(ExitCode::from(UNHEALTHY));
+                    }
+                }
+                Some(DoctorTarget::Nodes { store }) => {
+                    let report =
+                        doctor::run_nodes_doctor(&cwd, global_root.as_deref(), store.as_deref())?;
+                    match format {
+                        OutputFormat::Text => print!("{report}"),
+                        OutputFormat::Json => {
+                            println!("{}", serde_json::to_string_pretty(&report)?)
+                        }
+                    }
+                    if !report.healthy {
+                        return Ok(ExitCode::from(UNHEALTHY));
                     }
                 }
                 Some(DoctorTarget::Stores) => {
@@ -131,7 +173,7 @@ fn run() -> Result<()> {
         }
     }
 
-    Ok(())
+    Ok(ExitCode::SUCCESS)
 }
 
 fn default_root_for_init(scope: InitScope) -> PathBuf {

@@ -78,6 +78,23 @@ pub enum Commands {
         #[arg(long, value_enum, default_value_t = OutputFormat::Text)]
         format: OutputFormat,
     },
+    /// Render a store's computed index: one signature line per node, no index file to maintain.
+    Outline {
+        /// Limit the outline to a single store. Defaults to every resolved store.
+        store: Option<String>,
+        /// Cap how many path segments deep into a store nodes are listed. Defaults to unlimited.
+        #[arg(long)]
+        depth: Option<usize>,
+        /// Resolve relative to this directory instead of the current working directory.
+        #[arg(long)]
+        cwd: Option<PathBuf>,
+        /// Override the global rata root for this invocation.
+        #[arg(long)]
+        global_root: Option<PathBuf>,
+        /// Choose human-readable or JSON output.
+        #[arg(long, value_enum, default_value_t = OutputFormat::Text)]
+        format: OutputFormat,
+    },
     /// Print built-in documentation for common rata workflows.
     Docs {
         #[arg(value_enum)]
@@ -133,6 +150,11 @@ pub enum ResolveTarget {
 
 #[derive(Debug, Subcommand)]
 pub enum DoctorTarget {
+    /// Show every store node, which signature ladder tier it resolved at, and its frontmatter issues.
+    Nodes {
+        /// Limit the report to a single store.
+        store: Option<String>,
+    },
     /// Show each store layer and its effective composition policy.
     Stores,
     /// Show effective settings and the settings contributed by every layer.
