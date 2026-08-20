@@ -43,6 +43,13 @@ required.
 Frontmatter recognizes `description` and `tags`. `tags` is parsed and validated but not yet
 queryable — it is reserved so files written now do not need rewriting later.
 
+## Store refs in the pack
+
+A `[context].include` entry ending in a colon — `memory:` — is a store ref, not a path. `rata pack`
+renders that store's outline inline where the entry sits, labelled `## Store Index: memory:` and
+marked `generated:`. There is no file behind it: do not try to open or edit it, and do not treat a
+missing `MEMORY.md`-style index file as a problem. Add a memory and it appears in the next `pack`.
+
 ## The one frontmatter invariant
 
 > **Frontmatter can never change whether a file is packed.**

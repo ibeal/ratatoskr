@@ -4,8 +4,8 @@
 |---|---|
 | **Source** | plain ask |
 | **Spec** | authored here |
-| **Phase** | intake |
-| **PR** | — |
+| **Phase** | build |
+| **PR** | — (local stacked commit) |
 | **Project(s)** | ratatoskr, dotfiles/agents |
 | **Created** | 2026-08-19 |
 | **Updated** | 2026-08-19 |
@@ -75,6 +75,45 @@ derivable, so it should stop existing on disk.
 ### Build log
 
 - 2026-08-19: Spec authored from design discussion. Not started.
+- 2026-08-19: **Scope cut by the human: ratatoskr only.** The rata-side capability is built in full;
+  the `~/dotfiles/agents` migration (retiring `memory/MEMORY.md`, dropping its `@`-import from
+  `AGENTS.md`, switching `rata.toml` to `memory:`) is Ian's to apply. See *Not done* below.
+- 2026-08-19: Built the rata side.
+  - `[context].include` entries now resolve to a `ContextTarget` — either a `File { path }` or a
+    `StoreIndex { store }`. A store ref is a bare store name plus a trailing colon (`memory:`); the
+    colon is what makes it unambiguous against a relative path. `ResolvedContextEntry.path` became
+    `path()` returning `Option<&Path>`, since a synthesized index has no file.
+  - `pack` renders a store ref as `## Store Index: <store>:` with a `generated:` line stating that
+    rata computed it from a directory scan and no source file exists — same section framing as a
+    file include, but impossible to mistake for something editable. Ordering is by ref, so an
+    unchanged store packs byte-identically.
+  - An unknown store ref is treated exactly like a missing file: filtered under
+    `allow_missing = true`, reported by `doctor`, fatal when `allow_missing = false`. Reusing the
+    existing semantics beat inventing a second absence rule.
+  - `doctor` gained a **warnings** channel (separate from errors, so it does not affect `healthy`
+    or the exit code) with a `hand_maintained_index` warning.
+- 2026-08-19: The index-detection heuristic needed two passes. Counting sibling links alone either
+  missed the real `memory/MEMORY.md` (a 2-file store, so any absolute threshold is wrong) or fired
+  on ordinary prose that cites one sibling. What actually separates the two is **shape**: an index
+  *is* a list of pointers. It now requires the file to have ≥2 list items, at least half of which
+  link a sibling, plus links to at least half the store. Verified against the real five stores: it
+  flags `memory/MEMORY.md` and nothing else.
+
+### Not done (deliberately, and why)
+
+Everything below is a `~/dotfiles/agents` change, excluded by the 2026-08-19 ratatoskr-only
+decision. The rata side is complete, so each is now a one-line edit:
+
+- Switch `rata.toml`'s `[context].include` from `"memory/MEMORY.md"` to `"memory:"`.
+- Delete `memory/MEMORY.md`, keeping its non-pointer preamble (the "keep lean, one line per entry,
+  date anything time-bound" guidance) somewhere — it is *not* derivable and would otherwise be lost.
+  It is guidance about how to write memories, so `context/rata.md` is the natural home.
+- Drop `@memory/MEMORY.md` from `AGENTS.md`.
+- Note that `MEMORY.md` also points at `nix.md` at the dotfiles repo root, which is **outside** the
+  memory store. A store ref will not surface it; that pointer needs a real home.
+
+`rata doctor` already warns about `memory/MEMORY.md` today, so the reminder is in the tool rather
+than only in this file.
 
 ### Open questions
 

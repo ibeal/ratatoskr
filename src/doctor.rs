@@ -18,6 +18,20 @@ pub struct DoctorReport {
     pub healthy: bool,
     pub layers: Vec<DoctorLayer>,
     pub errors: Vec<DoctorError>,
+    pub warnings: Vec<DoctorWarning>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum DoctorWarning {
+    /// A store file that looks like a hand-maintained list of its siblings. `pack` can synthesize
+    /// that index from a store ref, so the file is a second source of truth that will drift.
+    HandMaintainedIndex {
+        path: PathBuf,
+        store: String,
+        /// The sibling refs the file links to.
+        links: Vec<String>,
+    },
 }
 
 #[derive(Debug, Serialize)]
@@ -47,6 +61,12 @@ pub enum DoctorError {
     /// frontmatter owns self-description. This is an error, not a warning, because the symptom
     /// (context bloat) shows up far from the cause.
     FrontmatterEagerness { path: PathBuf, key: String },
+    /// A `[context].include` store ref naming a store no scope declares.
+    UnknownContextStore {
+        store: String,
+        scope_kind: String,
+        scope_root: PathBuf,
+    },
 }
 
 #[derive(Debug, Serialize)]
@@ -111,6 +131,13 @@ pub fn run_doctor(
         &inspection.missing_context_files,
     );
     errors.extend(eagerness_violations(&inspection.manifest)?);
+    errors.extend(inspection.unknown_context_stores.iter().map(|unknown| {
+        DoctorError::UnknownContextStore {
+            store: unknown.store.clone(),
+            scope_kind: unknown.scope_kind.clone(),
+            scope_root: unknown.scope_root.clone(),
+        }
+    }));
 
     Ok(DoctorReport {
         healthy: errors.is_empty(),
@@ -124,7 +151,80 @@ pub fn run_doctor(
             })
             .collect(),
         errors,
+        warnings: hand_maintained_indexes(&inspection.manifest)?,
     })
+}
+
+/// Flag store files that duplicate what a store ref would synthesize. A file listing most of its
+/// siblings is an index someone has to remember to update; `pack` can compute it instead.
+fn hand_maintained_indexes(manifest: &ResolvedManifest) -> Result<Vec<DoctorWarning>> {
+    let mut warnings = Vec::new();
+
+    for store in outline::outline_stores(&manifest.stores, None, None)? {
+        let siblings = store
+            .nodes
+            .iter()
+            .map(|node| node.reference.as_str())
+            .collect::<Vec<_>>();
+
+        if siblings.len() < 2 {
+            continue;
+        }
+
+        for node in &store.nodes {
+            let Ok(contents) = fs::read_to_string(&node.path) else {
+                continue;
+            };
+            let others = siblings
+                .iter()
+                .filter(|sibling| **sibling != node.reference)
+                .collect::<Vec<_>>();
+            let links = others
+                .iter()
+                .filter(|sibling| links_to_sibling(&contents, sibling))
+                .map(|sibling| (**sibling).to_string())
+                .collect::<Vec<_>>();
+
+            if is_pointer_list(&contents, &others) && links.len() * 2 >= others.len() {
+                warnings.push(DoctorWarning::HandMaintainedIndex {
+                    path: node.path.clone(),
+                    store: store.name.clone(),
+                    links,
+                });
+            }
+        }
+    }
+
+    Ok(warnings)
+}
+
+/// The shape that distinguishes an index from prose that happens to cite a sibling: the file *is* a
+/// list of pointers. One inline cross-reference in a paragraph is not an index.
+fn is_pointer_list(contents: &str, siblings: &[&&str]) -> bool {
+    let items = contents
+        .lines()
+        .map(str::trim)
+        .filter(|line| line.starts_with("- ") || line.starts_with("* "))
+        .collect::<Vec<_>>();
+    let pointers = items
+        .iter()
+        .filter(|item| {
+            siblings
+                .iter()
+                .any(|sibling| links_to_sibling(item, sibling))
+        })
+        .count();
+
+    items.len() >= 2 && pointers * 2 >= items.len() && pointers > 0
+}
+
+/// A markdown or `@`-import link whose target resolves to the sibling's file.
+fn links_to_sibling(contents: &str, sibling: &str) -> bool {
+    let file = format!("{sibling}.md");
+    contents.contains(&format!("({file})"))
+        || contents.contains(&format!("`{file}`"))
+        || contents.contains(&format!("@{file}"))
+        || contents.contains(&format!("/{file}"))
 }
 
 /// Report where every node's signature came from, so thin signatures are visible without
@@ -247,12 +347,14 @@ fn eagerness_violations(manifest: &ResolvedManifest) -> Result<Vec<DoctorError>>
     let mut errors = Vec::new();
 
     for entry in &manifest.context_entries {
-        let Ok(contents) = fs::read_to_string(&entry.path) else {
-            // A file that cannot be read is already reported as a missing context file.
+        // A synthesized store index has no file, and a file that cannot be read is already
+        // reported as a missing context file.
+        let Some(path) = entry.path() else { continue };
+        let Ok(contents) = fs::read_to_string(path) else {
             continue;
         };
         errors.extend(violations_from(
-            &entry.path,
+            path,
             &frontmatter::parse(&contents).0.issues,
         ));
     }
@@ -311,6 +413,14 @@ impl Display for DoctorReport {
         } else {
             for error in &self.errors {
                 display_error(f, error)?;
+            }
+        }
+        writeln!(f, "warnings:")?;
+        if self.warnings.is_empty() {
+            writeln!(f, "  - <none>")?;
+        } else {
+            for warning in &self.warnings {
+                display_warning(f, warning)?;
             }
         }
         Ok(())
@@ -480,8 +590,28 @@ fn display_error(f: &mut fmt::Formatter<'_>, error: &DoctorError) -> fmt::Result
             "  - frontmatter key `{key}` in {} would affect eagerness; rata.toml owns that, not the file",
             path.display(),
         )?,
+        DoctorError::UnknownContextStore {
+            store,
+            scope_kind,
+            scope_root,
+        } => writeln!(
+            f,
+            "  - unknown store `{store}:` in [context].include [{scope_kind} {}]",
+            scope_root.display(),
+        )?,
     }
     Ok(())
+}
+
+fn display_warning(f: &mut fmt::Formatter<'_>, warning: &DoctorWarning) -> fmt::Result {
+    match warning {
+        DoctorWarning::HandMaintainedIndex { path, store, links } => writeln!(
+            f,
+            "  - {} looks like a hand-maintained index of {store} ({} sibling links); replace it with the `{store}:` store ref in [context].include",
+            path.display(),
+            links.len(),
+        ),
+    }
 }
 
 fn composition_label(composition: StoreComposition) -> &'static str {
@@ -517,7 +647,7 @@ mod tests {
 
     use crate::config::StoreComposition;
 
-    use super::{DoctorError, run_doctor, run_settings_doctor, run_stores_doctor};
+    use super::{DoctorError, DoctorWarning, run_doctor, run_settings_doctor, run_stores_doctor};
 
     #[test]
     fn doctor_subcommands_expose_detailed_store_and_settings_diagnostics() {
@@ -628,6 +758,45 @@ memory = "memory"
                 .count(),
             2
         );
+
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn doctor_warns_about_a_file_that_hand_maintains_an_index_of_its_siblings() {
+        let root = temp_dir("doctor-hand-index");
+        let global_root = root.join("global");
+        fs::create_dir_all(global_root.join("memory")).unwrap();
+        write_config(
+            &global_root,
+            "version = 1\n\n[stores]\nmemory = \"memory\"\n",
+        );
+        fs::write(global_root.join("memory/nix.md"), "# Nix\n").unwrap();
+        fs::write(global_root.join("memory/containers.md"), "# Containers\n").unwrap();
+        // One cross-reference is prose, not an index.
+        fs::write(
+            global_root.join("memory/tools.md"),
+            "# Tools\n\nSee [nix](nix.md) for the pinning pattern.\n",
+        )
+        .unwrap();
+
+        let report = run_doctor(&global_root, Some(&global_root), &[]).unwrap();
+        assert!(report.warnings.is_empty(), "{:?}", report.warnings);
+
+        // A pointer list of the whole store is.
+        fs::write(
+            global_root.join("memory/MEMORY.md"),
+            "# Memory\n\n- [Nix](nix.md)\n- [Containers](containers.md)\n- [Tools](tools.md)\n",
+        )
+        .unwrap();
+
+        let report = run_doctor(&global_root, Some(&global_root), &[]).unwrap();
+        assert!(report.healthy, "an index is a warning, not an error");
+        assert!(report.warnings.iter().any(|warning| matches!(
+            warning,
+            DoctorWarning::HandMaintainedIndex { path, links, .. }
+                if path.ends_with("MEMORY.md") && links.len() == 3
+        )));
 
         fs::remove_dir_all(root).unwrap();
     }

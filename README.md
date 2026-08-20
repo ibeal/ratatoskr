@@ -140,6 +140,33 @@ tags: [nix, agents]
 need rewriting when tag selection lands. Unrecognized keys are reported by `rata doctor nodes`
 rather than ignored.
 
+## Store refs in `[context].include`
+
+An `[context].include` entry may be a **store ref** — a bare store name and a colon — instead of a
+path:
+
+```toml
+[context]
+include = [
+  "AGENTS.md",
+  "context/PREFERENCES.md",
+  "memory:",
+]
+```
+
+`pack` renders that store's computed outline inline, at the same position and with the same section
+framing a file include gets, marked as generated so a reader knows there is no source file behind it
+and that editing the output changes nothing. Ordering is by ref, so two runs over an unchanged store
+are byte-identical.
+
+This replaces hand-maintained index files. A pointer list like `memory/MEMORY.md` has to be updated
+every time a memory is added, and nothing enforces it; a store ref derives the same list from the
+directory on every run. `rata doctor` **warns** when a store still contains a file that looks like a
+hand-maintained index of its siblings, so the pattern does not quietly grow back.
+
+A store ref naming a store no scope declares behaves like a missing file: `rata doctor` reports it,
+and it is only fatal when `allow_missing = false`.
+
 ## Who decides what gets packed
 
 Frontmatter introduces a second place that describes a file, alongside `rata.toml`. Two sources of

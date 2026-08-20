@@ -59,7 +59,7 @@
           "items": {
             "type": "string"
           },
-          "description": "Context file paths relative to the scope root."
+          "description": "Context entries in load order. Each is either a file path relative to the scope root, or a store ref -- a bare store name followed by a colon, e.g. \"memory:\" -- which packs that store's computed outline inline instead of a file's contents."
         }
       }
     },
