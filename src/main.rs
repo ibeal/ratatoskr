@@ -4,6 +4,7 @@ mod docs;
 mod doctor;
 mod errors;
 mod frontmatter;
+mod graph;
 mod headings;
 mod init;
 mod outline;
@@ -146,6 +147,39 @@ fn run() -> Result<ExitCode> {
                 OutputFormat::Text => print!("{report}"),
                 OutputFormat::Json => println!("{}", serde_json::to_string_pretty(&report)?),
             }
+        }
+        Commands::Callers {
+            reference,
+            cwd,
+            global_root,
+            profiles,
+            format,
+        } => {
+            let cwd = cwd.unwrap_or(std::env::current_dir()?);
+            let report = graph::build_callers(&cwd, global_root.as_deref(), &profiles, &reference)?;
+            match format {
+                OutputFormat::Text => print!("{report}"),
+                OutputFormat::Json => println!("{}", serde_json::to_string_pretty(&report)?),
+            }
+        }
+        Commands::Graph {
+            format,
+            from,
+            depth,
+            cwd,
+            global_root,
+            profiles,
+        } => {
+            let cwd = cwd.unwrap_or(std::env::current_dir()?);
+            let report = graph::build_graph(
+                &cwd,
+                global_root.as_deref(),
+                &profiles,
+                format.into(),
+                from.as_deref(),
+                depth,
+            )?;
+            print!("{report}");
         }
         Commands::Docs { topic } => {
             print!("{}", docs::render(topic));

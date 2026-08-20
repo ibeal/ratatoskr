@@ -8,6 +8,7 @@ use serde::Serialize;
 use crate::config::{EffectiveSettings, RemoteStatusKind, SettingsLayer, StoreComposition};
 use crate::errors::Result;
 use crate::frontmatter::{self, FrontmatterIssue};
+use crate::graph;
 use crate::outline::{self, Node, SignatureTier};
 use crate::resolve::{
     self, ContextSource, MissingContextFile, ResolvedManifest, ResolvedStoreLayer,
@@ -31,6 +32,13 @@ pub enum DoctorWarning {
         store: String,
         /// The sibling refs the file links to.
         links: Vec<String>,
+    },
+    /// A prose link to a local markdown file that does not resolve. A warning rather than an error:
+    /// a dead link is worth knowing about but does not break resolution.
+    BrokenEdge {
+        from: String,
+        target: String,
+        line: usize,
     },
 }
 
@@ -140,6 +148,17 @@ pub fn run_doctor(
         }
     }));
 
+    let mut warnings = hand_maintained_indexes(&inspection.manifest)?;
+    warnings.extend(
+        graph::broken_edges(&inspection.manifest)?
+            .into_iter()
+            .map(|edge| DoctorWarning::BrokenEdge {
+                from: edge.from,
+                target: edge.target,
+                line: edge.line,
+            }),
+    );
+
     Ok(DoctorReport {
         healthy: errors.is_empty(),
         layers: inspection
@@ -152,7 +171,7 @@ pub fn run_doctor(
             })
             .collect(),
         errors,
-        warnings: hand_maintained_indexes(&inspection.manifest)?,
+        warnings,
     })
 }
 
@@ -629,6 +648,10 @@ fn display_error(f: &mut fmt::Formatter<'_>, error: &DoctorError) -> fmt::Result
 
 fn display_warning(f: &mut fmt::Formatter<'_>, warning: &DoctorWarning) -> fmt::Result {
     match warning {
+        DoctorWarning::BrokenEdge { from, target, line } => writeln!(
+            f,
+            "  - {from}:{line} links to `{target}`, which resolves to nothing"
+        ),
         DoctorWarning::HandMaintainedIndex { path, store, links } => writeln!(
             f,
             "  - {} looks like a hand-maintained index of {store} ({} sibling links); replace it with the `{store}:` store ref in [context].include",

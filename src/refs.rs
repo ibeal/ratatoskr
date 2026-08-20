@@ -131,31 +131,57 @@ pub struct ChildRef {
 
 /// Everything a ref can name, built once so resolution and candidate suggestions share a view.
 pub struct RefSpace {
-    /// Addressable file refs → the file on disk.
+    /// Addressable file refs → the file on disk. One file may have several addresses.
     files: BTreeMap<String, PathBuf>,
+    /// The one address to *print* for a file. Several spellings resolve; only one is canonical.
+    canonical: BTreeMap<PathBuf, String>,
 }
 
 impl RefSpace {
     pub fn build(manifest: &ResolvedManifest) -> Result<Self> {
         let mut files = BTreeMap::new();
+        let mut canonical = BTreeMap::<PathBuf, String>::new();
 
         // Context files are addressable by their path relative to the scope that declared them,
         // which is how they are written in rata.toml and in prose links.
         for entry in &manifest.context_entries {
             let Some(path) = entry.path() else { continue };
             if let Ok(relative) = path.strip_prefix(&entry.scope_root) {
-                files.insert(slashed(relative), path.to_path_buf());
+                let address = slashed(relative);
+                files.insert(address.clone(), path.to_path_buf());
+                prefer_canonical(&mut canonical, path, address);
             }
             files.insert(path.display().to_string(), path.to_path_buf());
+            prefer_canonical(&mut canonical, path, path.display().to_string());
         }
 
         for store in outline::outline_stores(&manifest.stores, None, None)? {
             for node in store.nodes {
-                files.insert(format!("{}:{}", store.name, node.reference), node.path);
+                let address = format!("{}:{}", store.name, node.reference);
+                prefer_canonical(&mut canonical, &node.path, address.clone());
+                files.insert(address, node.path);
             }
         }
 
-        Ok(Self { files })
+        Ok(Self { files, canonical })
+    }
+
+    /// Every addressable file, by canonical ref. This is the graph's node set.
+    pub fn nodes(&self) -> impl Iterator<Item = (&str, &Path)> {
+        self.canonical
+            .iter()
+            .map(|(path, address)| (address.as_str(), path.as_path()))
+    }
+
+    /// The ref to print for a file, if the file is addressable at all.
+    pub fn canonical_ref(&self, path: &Path) -> Option<&str> {
+        self.canonical.get(path).map(String::as_str)
+    }
+
+    /// Resolve an address as written to its canonical ref, without reading the file.
+    pub fn lookup_ref(&self, address: &str) -> Option<&str> {
+        let path = self.lookup(address)?;
+        self.canonical.get(&path).map(String::as_str)
     }
 
     /// Resolve a ref, or fail with the closest things that do exist. A bare error here would send
@@ -347,6 +373,22 @@ fn similarity(needle: &str, candidate: &str) -> usize {
     }
 
     best
+}
+
+/// Prefer a store ref over a relative path over an absolute one, then the shorter of equals — the
+/// most specific, least verbose way to name the file.
+fn prefer_canonical(canonical: &mut BTreeMap<PathBuf, String>, path: &Path, address: String) {
+    let rank = |value: &str| match () {
+        _ if value.contains(':') => 0,
+        _ if !value.starts_with('/') => 1,
+        _ => 2,
+    };
+    match canonical.get(path) {
+        Some(existing) if (rank(existing), existing.len()) <= (rank(&address), address.len()) => {}
+        _ => {
+            canonical.insert(path.to_path_buf(), address);
+        }
+    }
 }
 
 fn slashed(path: &Path) -> String {

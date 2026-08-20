@@ -191,6 +191,47 @@ error: unresolved ref `workflow/sdlk.md`; did you mean one of:
   workflow/sdlc.md
 ```
 
+## Reverse edges: `callers` and `graph`
+
+`outline` and `show` only descend. The links *between* documents make the real structure a graph, so
+`rata callers <ref>` answers the question that has no other answer — *what depends on this?* — before
+you edit or move something.
+
+```text
+rata callers context/PREFERENCES.md
+rata callers 'AGENTS.md#Safety'
+rata graph --format mermaid --from AGENTS.md --depth 2
+rata graph --format dot
+```
+
+Edges come from **prose**, not from structured metadata, because that is where the structure
+actually lives:
+
+- markdown inline links, `[text](target)`
+- reference definitions, `[label]: target`
+- `@path` transclusions
+- a path named in a code span — `` `workflow/sdlc.md` `` — since sentences like "read
+  `workflow/sdlc.md` first" carry much of the graph
+
+Links inside fenced code blocks are excluded: those are examples, not structure. A target resolves
+either relative to the linking file or as a scope-relative ref, so both spellings work.
+
+`callers` is **one hop**. Find-references is a one-hop question, and over a corpus this
+cross-linked a transitive answer converges on "everything".
+
+Given a heading ref, `callers` matches only links that reached that heading. Given a file ref, it
+matches every link into the file.
+
+Cycles and multiple parents are handled by design, not retrofitted: `graph --from` walks with a
+visited set, so a cycle terminates, and a node reached by two parents is simply reached twice.
+
+`rata doctor` reports a **broken edge** when an explicit link points at a markdown file that does not
+exist, so the graph doubles as a dead-link check. A link to a file that exists but is not in a store
+or an include is *not* reported — that is unaddressable, not dead, and conflating the two would make
+`doctor` cry wolf.
+
+`graph` is rendering only. No layout opinions: pipe the Mermaid or DOT output wherever you like.
+
 ## Store refs in `[context].include`
 
 An `[context].include` entry may be a **store ref** — a bare store name and a colon — instead of a
@@ -283,6 +324,8 @@ rata outline AGENTS.md
 rata show memory:containerized-agents
 rata show AGENTS.md#Safety
 rata show 'workflow/sdlc.md#Phases/PR-summaries' --depth 1
+rata callers context/PREFERENCES.md
+rata graph --format mermaid --from AGENTS.md --depth 2
 rata pack
 rata only profile build
 rata only scope local

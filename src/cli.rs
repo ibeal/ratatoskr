@@ -115,6 +115,44 @@ pub enum Commands {
         #[arg(long, value_enum, default_value_t = OutputFormat::Text)]
         format: OutputFormat,
     },
+    /// Find every node that links to a ref — the reverse of `show`.
+    Callers {
+        /// A ref: `context/PREFERENCES.md`, `AGENTS.md#Safety`, `memory:some-note`.
+        reference: String,
+        /// Resolve relative to this directory instead of the current working directory.
+        #[arg(long)]
+        cwd: Option<PathBuf>,
+        /// Override the global rata root for this invocation.
+        #[arg(long)]
+        global_root: Option<PathBuf>,
+        /// Apply one or more additive context profiles, widening the graph.
+        #[arg(long = "profile")]
+        profiles: Vec<String>,
+        /// Choose human-readable or JSON output.
+        #[arg(long, value_enum, default_value_t = OutputFormat::Text)]
+        format: OutputFormat,
+    },
+    /// Render the link graph. Rendering only — no layout opinions.
+    Graph {
+        /// Diagram syntax to emit.
+        #[arg(long, value_enum, default_value_t = GraphFormatArg::Mermaid)]
+        format: GraphFormatArg,
+        /// Restrict to what is reachable from this ref.
+        #[arg(long)]
+        from: Option<String>,
+        /// Follow at most this many hops from `--from`.
+        #[arg(long)]
+        depth: Option<usize>,
+        /// Resolve relative to this directory instead of the current working directory.
+        #[arg(long)]
+        cwd: Option<PathBuf>,
+        /// Override the global rata root for this invocation.
+        #[arg(long)]
+        global_root: Option<PathBuf>,
+        /// Apply one or more additive context profiles, widening the graph.
+        #[arg(long = "profile")]
+        profiles: Vec<String>,
+    },
     /// Print built-in documentation for common rata workflows.
     Docs {
         #[arg(value_enum)]
@@ -159,6 +197,13 @@ pub enum OutputFormat {
     #[default]
     Text,
     Json,
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, ValueEnum)]
+pub enum GraphFormatArg {
+    #[default]
+    Mermaid,
+    Dot,
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq, ValueEnum)]

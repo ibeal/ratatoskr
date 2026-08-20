@@ -68,6 +68,23 @@ explicit `{#anchor}`, the slugified title, or the title itself, so `#PR-summarie
 `#PR summaries` are the same ref. An unresolvable ref lists the closest candidates; read those rather
 than guessing paths.
 
+## Before editing a context file
+
+`rata callers <ref>` lists every node that links to it, with the linking line. Run it before you
+move, rename, or rewrite a context file — there is no other way to find what depends on it.
+
+```text
+rata callers context/PREFERENCES.md
+rata callers 'AGENTS.md#Safety'
+```
+
+One hop, which is what find-references means. Edges come from prose: markdown links, `[label]:`
+definitions, `@path` transclusions, and paths named in code spans. Links inside fenced blocks do not
+count.
+
+`rata graph [--format mermaid|dot] [--from <ref>] [--depth N]` renders the graph when a picture
+helps. `rata doctor` reports dead links as broken edges.
+
 ## Store refs in the pack
 
 A `[context].include` entry ending in a colon — `memory:` — is a store ref, not a path. `rata pack`
