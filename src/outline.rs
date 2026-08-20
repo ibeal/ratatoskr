@@ -7,6 +7,7 @@ use serde::Serialize;
 
 use crate::errors::{RatatoskrError, Result};
 use crate::frontmatter::{self, Frontmatter};
+use crate::refs;
 use crate::resolve::{self, ResolvedStore};
 
 /// How long a rendered signature may get before the text output truncates it. The ladder itself
@@ -18,6 +19,34 @@ pub struct OutlineReport {
     pub cwd: PathBuf,
     pub depth: Option<usize>,
     pub stores: Vec<OutlineStore>,
+    /// Set when the target was a file ref rather than a store: the file's heading tree. Outline
+    /// operates over one model at both granularities.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub file: Option<FileOutline>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct FileOutline {
+    #[serde(rename = "ref")]
+    pub reference: String,
+    pub path: PathBuf,
+    pub signature: String,
+    pub tier: SignatureTier,
+    pub headings: Vec<OutlineHeading>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct OutlineHeading {
+    #[serde(rename = "ref")]
+    pub reference: String,
+    pub level: usize,
+    pub title: String,
+    pub signature: String,
+    pub tier: SignatureTier,
+    /// Nesting under the file, starting at 1 for a top-level heading.
+    pub depth: usize,
+    /// True when the signature only restates the heading title.
+    pub redundant: bool,
 }
 
 #[derive(Debug, Serialize)]
@@ -101,7 +130,82 @@ pub fn build_outline(
         cwd: resolved.cwd,
         depth,
         stores,
+        file: None,
     })
+}
+
+/// True when the outline target names a resolved store, so `outline` can tell a store name from a
+/// file ref. `None` means "every store", which is also the store form.
+pub fn store_named(
+    cwd: &Path,
+    global_root_override: Option<&Path>,
+    target: Option<&str>,
+) -> Result<bool> {
+    let Some(target) = target else {
+        return Ok(true);
+    };
+    let resolved = resolve::resolve_stores(cwd, global_root_override, &[])?;
+    Ok(resolved.stores.contains_key(target))
+}
+
+/// Outline the heading tree of one file ref, rather than the node list of a store.
+pub fn build_file_outline(
+    cwd: &Path,
+    global_root_override: Option<&Path>,
+    reference: &str,
+    depth: Option<usize>,
+) -> Result<OutlineReport> {
+    let (space, manifest) = refs::ref_space(cwd, global_root_override, &[])?;
+    let node = space.resolve(&crate::refs::Ref::parse(reference))?;
+    let base = node
+        .reference
+        .split_once('#')
+        .map(|(base, _)| base.to_string())
+        .unwrap_or_else(|| node.reference.clone());
+
+    let mut flattened = Vec::new();
+    let roots = match &node.heading {
+        Some(heading) => std::slice::from_ref(heading),
+        None => node.file_headings.as_slice(),
+    };
+    flatten_headings(&base, roots, 1, depth, &mut flattened);
+
+    Ok(OutlineReport {
+        cwd: manifest.cwd,
+        depth,
+        stores: Vec::new(),
+        file: Some(FileOutline {
+            reference: node.reference.clone(),
+            path: node.path.clone(),
+            signature: node.signature.clone(),
+            tier: node.tier,
+            headings: flattened,
+        }),
+    })
+}
+
+fn flatten_headings(
+    base: &str,
+    headings: &[crate::headings::Heading],
+    level: usize,
+    depth: Option<usize>,
+    out: &mut Vec<OutlineHeading>,
+) {
+    if depth.is_some_and(|limit| level > limit) {
+        return;
+    }
+    for heading in headings {
+        out.push(OutlineHeading {
+            reference: format!("{base}#{}", heading.address()),
+            level: heading.level,
+            title: heading.title.clone(),
+            redundant: is_redundant(&heading.signature, &heading.title),
+            signature: heading.signature.clone(),
+            tier: heading.tier,
+            depth: level,
+        });
+        flatten_headings(base, &heading.children, level + 1, depth, out);
+    }
 }
 
 /// Scan already-resolved stores into outlines, so callers that have a manifest in hand do not
@@ -362,7 +466,7 @@ fn first_heading(body: &str) -> Option<&str> {
 /// The first sentence of the first prose paragraph. Headings, list items, quotes, tables and fenced
 /// blocks are structure rather than description, so they are skipped — as are the wrapped
 /// continuation lines of a skipped list item, which are still that item's text.
-fn first_sentence(body: &str, skip_heading: bool) -> Option<String> {
+pub fn first_sentence(body: &str, skip_heading: bool) -> Option<String> {
     let mut lines = body.lines();
     if skip_heading {
         for line in lines.by_ref() {
@@ -458,7 +562,7 @@ fn cut_at_sentence_end(text: &str) -> &str {
 }
 
 /// Strip the inline markup that would make a one-line signature noisy, keeping the words.
-fn clean_inline(text: &str) -> String {
+pub fn clean_inline(text: &str) -> String {
     let mut out = String::with_capacity(text.len());
     let mut chars = text.chars().peekable();
 
@@ -519,7 +623,7 @@ fn squash(value: &str) -> String {
         .collect()
 }
 
-fn truncate(signature: &str) -> String {
+pub fn truncate(signature: &str) -> String {
     if signature.chars().count() <= SIGNATURE_RENDER_LIMIT {
         return signature.to_string();
     }
@@ -545,6 +649,34 @@ impl Display for OutlineReport {
                 .map(|depth| depth.to_string())
                 .unwrap_or_else(|| "unlimited".to_string())
         )?;
+
+        if let Some(file) = &self.file {
+            writeln!(f)?;
+            writeln!(f, "## {}", file.reference)?;
+            writeln!(f)?;
+            writeln!(f, "path: {}", file.path.display())?;
+            writeln!(f, "signature: {}", truncate(&file.signature))?;
+            writeln!(f)?;
+            if file.headings.is_empty() {
+                return writeln!(f, "- <no headings>");
+            }
+            for heading in &file.headings {
+                // Indent by nesting so the tree is readable, but keep the full ref on the line so
+                // it can be copied straight into `rata show`.
+                let indent = "  ".repeat(heading.depth.saturating_sub(1));
+                if heading.redundant {
+                    writeln!(f, "{indent}- {}", heading.reference)?;
+                } else {
+                    writeln!(
+                        f,
+                        "{indent}- {} — {}",
+                        heading.reference,
+                        truncate(&heading.signature)
+                    )?;
+                }
+            }
+            return Ok(());
+        }
 
         if self.stores.is_empty() {
             writeln!(f)?;

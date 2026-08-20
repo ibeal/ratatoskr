@@ -4,8 +4,8 @@
 |---|---|
 | **Source** | plain ask |
 | **Spec** | authored here |
-| **Phase** | intake |
-| **PR** | — |
+| **Phase** | build |
+| **PR** | — (local stacked commit) |
 | **Project(s)** | ratatoskr |
 | **Created** | 2026-08-19 |
 | **Updated** | 2026-08-19 |
@@ -62,7 +62,7 @@ with signatures.
   escape hatch for anything cross-referenced. Accepting that fragility for incidental refs keeps
   authoring cost at zero for the common case.
 - **Recommendation:** go.
-- **Human's decision:** pending.
+- **Human's decision:** 2026-08-19 — go, as part of the series; stacked local commit, no PR.
 
 ### Decisions carried in from design
 
@@ -76,10 +76,41 @@ with signatures.
 ### Build log
 
 - 2026-08-19: Spec authored from design discussion. Not started.
+- 2026-08-20: Built. Three new modules:
+  - `src/headings.rs` — parses a file body into a heading forest. A heading's body is the prose
+    under it minus its descendants; its signature uses the same ladder, minus the two rungs that
+    cannot apply (no frontmatter, no filename), so first-sentence then title. Fences are tracked so
+    a `#` in a shell block is not a heading, and levels may skip (an H1 followed by an H3 nests
+    correctly).
+  - `src/refs.rs` — one parser and one resolver for the whole ref space. `Ref::parse` splits
+    `store:node#heading/path`; `RefSpace` indexes context files (by scope-relative path *and*
+    absolute path) plus every store node.
+  - `src/show.rs` — the `rata show` report.
+- 2026-08-20: **The H1 collapse was the design call that made the syntax usable.** Rendering
+  addresses naively produced
+  `AGENTS.md#agents-md-personal-operating-manual/safety` — the H1 slug in every ref, adding nothing.
+  A lone top-level heading is now treated as the *file's title* rather than a section inside it: its
+  prose becomes the file node's own body and its children become the file's children. That yields
+  `AGENTS.md#Safety` (the syntax the AC actually specifies) and it also makes `show <file>` return
+  the intro prose plus the section signatures, which is the useful thing. Sibling H1s are still real
+  sections and are not collapsed. This replaced an earlier skip-the-title special case in the
+  resolver, which was the same idea in the wrong place.
+- 2026-08-20: `outline` takes one positional that is either a store name or a file ref; a store wins
+  when the name matches one, so `rata outline memory` keeps its old meaning.
+- 2026-08-20: Two resolution refinements found by running it:
+  - A shorthand (`sdlc.md`) matched both the relative and absolute address of the *same* file and
+    was rejected as ambiguous. Ambiguity is now judged on resolved paths, not address strings.
+  - Candidate lists preferred absolute paths. They now prefer the scope-relative form, which is how
+    refs are meant to be written.
 
 ### Open questions
 
-- Does `show` on a store node need `--depth` at all, or is depth only meaningful for headings?
+- ~~Does `show` on a store node need `--depth` at all, or is depth only meaningful for headings?~~
+  **Depth is uniform, and it is meaningful for files.** A file's children are its top-level
+  headings, so one rule covers both granularities and there is nothing extra to remember. The AC's
+  "`show memory:containerized-agents` returns the file body" still holds because that file has no
+  subheadings — with no descendants to exclude, a file's own body *is* the whole file. Special-casing
+  files would have made depth mean two different things.
 
 ### Checkpoints (memory boundaries)
 

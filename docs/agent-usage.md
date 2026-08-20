@@ -43,6 +43,31 @@ required.
 Frontmatter recognizes `description` and `tags`. `tags` is parsed and validated but not yet
 queryable — it is reserved so files written now do not need rewriting later.
 
+## Stepping in instead of loading a file
+
+`outline` tells you what exists; `show` reads exactly one part of it. Prefer this over loading a
+whole file when you need one section:
+
+```text
+rata outline workflow/sdlc.md            # the heading tree, signatures only
+rata show workflow/sdlc.md#PR-summaries  # that section alone
+rata show workflow/sdlc.md#Phases --depth 1
+```
+
+Refs address a file or a heading inside one, with the same syntax at both scales:
+
+```text
+memory:containerized-agents            a store node
+AGENTS.md#Safety                       a heading in a context file
+workflow/sdlc.md#Phases/PR-summaries   a nested heading
+```
+
+`--depth 0` (the default) gives the node's body plus its children's signatures — enough to pick the
+next step without loading it. `--depth N` descends N levels with bodies. A heading segment matches an
+explicit `{#anchor}`, the slugified title, or the title itself, so `#PR-summaries` and
+`#PR summaries` are the same ref. An unresolvable ref lists the closest candidates; read those rather
+than guessing paths.
+
 ## Store refs in the pack
 
 A `[context].include` entry ending in a colon — `memory:` — is a store ref, not a path. `rata pack`

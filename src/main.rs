@@ -4,10 +4,13 @@ mod docs;
 mod doctor;
 mod errors;
 mod frontmatter;
+mod headings;
 mod init;
 mod outline;
 mod pack;
+mod refs;
 mod resolve;
+mod show;
 #[cfg(test)]
 mod test_support;
 
@@ -97,20 +100,48 @@ fn run() -> Result<ExitCode> {
                 OutputFormat::Json => println!("{}", serde_json::to_string_pretty(&bundle)?),
             }
         }
+        Commands::Show {
+            reference,
+            depth,
+            cwd,
+            global_root,
+            profiles,
+            format,
+        } => {
+            let cwd = cwd.unwrap_or(std::env::current_dir()?);
+            let report =
+                show::build_show(&cwd, global_root.as_deref(), &profiles, &reference, depth)?;
+            match format {
+                OutputFormat::Text => print!("{report}"),
+                OutputFormat::Json => println!("{}", serde_json::to_string_pretty(&report)?),
+            }
+        }
         Commands::Outline {
-            store,
+            target,
             depth,
             cwd,
             global_root,
             format,
         } => {
             let cwd = cwd.unwrap_or(std::env::current_dir()?);
-            let report = outline::build_outline(
-                &cwd,
-                global_root.as_deref(),
-                store.as_deref(),
-                depth.map(usize::from),
-            )?;
+            let depth = depth.map(usize::from);
+            // A store name and a file ref share one positional slot: a store wins when the name
+            // matches one, so `rata outline memory` keeps meaning the store.
+            let report =
+                match outline::store_named(&cwd, global_root.as_deref(), target.as_deref())? {
+                    true => outline::build_outline(
+                        &cwd,
+                        global_root.as_deref(),
+                        target.as_deref(),
+                        depth,
+                    )?,
+                    false => outline::build_file_outline(
+                        &cwd,
+                        global_root.as_deref(),
+                        target.as_deref().unwrap_or_default(),
+                        depth,
+                    )?,
+                };
             match format {
                 OutputFormat::Text => print!("{report}"),
                 OutputFormat::Json => println!("{}", serde_json::to_string_pretty(&report)?),

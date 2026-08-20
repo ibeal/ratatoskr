@@ -140,6 +140,57 @@ tags: [nix, agents]
 need rewriting when tag selection lands. Unrecognized keys are reported by `rata doctor nodes`
 rather than ignored.
 
+## Refs: one address for everything
+
+```text
+memory:containerized-agents            a store node
+AGENTS.md#Safety                       a heading in a context file
+workflow/sdlc.md#Phases/PR-summaries   a nested heading, path-addressed
+memory:nix#Patterns                    a heading inside a store node
+```
+
+A **heading is a node too**, with the same signature/body model as a file: its body is the prose
+under it *minus its descendants*, and its signature resolves through the same ladder (first sentence,
+then the heading text). Inter-file navigation and intra-file navigation are the same operation at
+different scales, which is why one syntax covers both.
+
+`rata show <ref> [--depth N]` reads one node:
+
+- `--depth 0` (the default) — the node's own body, plus the **signatures** of its children. You see
+  what is below without paying for it.
+- `--depth N` — descend N levels, bodies included.
+
+The rule is uniform: a file's children are its top-level headings, so `show` behaves the same way
+whichever granularity you address. A file with no headings has no descendants to exclude, so its own
+body is the whole file.
+
+`rata outline <file-ref>` renders that file's heading tree instead of a store's node list, so
+`outline` and `show` operate over one model at both granularities. A bare name that matches a store
+still means the store.
+
+Addressing is stable where it matters. A heading may carry an explicit anchor:
+
+```markdown
+## PR summaries {#pr-sums}
+```
+
+The anchor is honoured in preference to the heading text, so a cross-referenced section keeps its
+address when someone rewords the heading. Everything else falls back to heading-path addressing,
+which costs nothing to author and is fragile only under renames. Segments match an anchor, the
+slugified title, or the title itself, so `#PR-summaries` and `#PR summaries` both resolve.
+
+A lone top-level heading is treated as the file's title rather than a section inside it — hence
+`AGENTS.md#Safety`, not `AGENTS.md#agents-md-personal-operating-manual/Safety`.
+
+An unresolvable ref fails with the closest candidates listed, never a bare error:
+
+```text
+error: unresolved ref `workflow/sdlk.md`; did you mean one of:
+  AGENTS.md
+  context/PREFERENCES.md
+  workflow/sdlc.md
+```
+
 ## Store refs in `[context].include`
 
 An `[context].include` entry may be a **store ref** — a bare store name and a colon — instead of a
@@ -228,6 +279,10 @@ rata doctor --format json
 rata outline
 rata outline memory
 rata outline memory --depth 1
+rata outline AGENTS.md
+rata show memory:containerized-agents
+rata show AGENTS.md#Safety
+rata show 'workflow/sdlc.md#Phases/PR-summaries' --depth 1
 rata pack
 rata only profile build
 rata only scope local

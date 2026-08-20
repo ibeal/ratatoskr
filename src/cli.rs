@@ -78,10 +78,30 @@ pub enum Commands {
         #[arg(long, value_enum, default_value_t = OutputFormat::Text)]
         format: OutputFormat,
     },
-    /// Render a store's computed index: one signature line per node, no index file to maintain.
+    /// Read one node: its body plus the signatures of its children.
+    Show {
+        /// A ref: `memory:some-note`, `AGENTS.md#Safety`, or `workflow/sdlc.md#Phases/PR summaries`.
+        reference: String,
+        /// Descend this many levels, including their bodies. 0 lists children as signatures only.
+        #[arg(long, default_value_t = 0)]
+        depth: usize,
+        /// Resolve relative to this directory instead of the current working directory.
+        #[arg(long)]
+        cwd: Option<PathBuf>,
+        /// Override the global rata root for this invocation.
+        #[arg(long)]
+        global_root: Option<PathBuf>,
+        /// Apply one or more additive context profiles, widening the ref space.
+        #[arg(long = "profile")]
+        profiles: Vec<String>,
+        /// Choose human-readable or JSON output.
+        #[arg(long, value_enum, default_value_t = OutputFormat::Text)]
+        format: OutputFormat,
+    },
+    /// Render a computed index: a store's nodes, or one file's heading tree.
     Outline {
-        /// Limit the outline to a single store. Defaults to every resolved store.
-        store: Option<String>,
+        /// A store name, or a file ref to outline its headings. Defaults to every resolved store.
+        target: Option<String>,
         /// Cap how many path segments deep into a store nodes are listed. Defaults to unlimited.
         #[arg(long, value_parser = clap::value_parser!(u16).range(1..))]
         depth: Option<u16>,
