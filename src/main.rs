@@ -122,6 +122,7 @@ fn run() -> Result<ExitCode> {
             depth,
             cwd,
             global_root,
+            profiles,
             format,
         } => {
             let cwd = cwd.unwrap_or(std::env::current_dir()?);
@@ -139,6 +140,7 @@ fn run() -> Result<ExitCode> {
                     false => outline::build_file_outline(
                         &cwd,
                         global_root.as_deref(),
+                        &profiles,
                         target.as_deref().unwrap_or_default(),
                         depth,
                     )?,
@@ -163,6 +165,7 @@ fn run() -> Result<ExitCode> {
             }
         }
         Commands::Graph {
+            syntax,
             format,
             from,
             depth,
@@ -175,11 +178,14 @@ fn run() -> Result<ExitCode> {
                 &cwd,
                 global_root.as_deref(),
                 &profiles,
-                format.into(),
+                syntax.into(),
                 from.as_deref(),
                 depth,
             )?;
-            print!("{report}");
+            match format {
+                OutputFormat::Text => print!("{report}"),
+                OutputFormat::Json => println!("{}", serde_json::to_string_pretty(&report)?),
+            }
         }
         Commands::Docs { topic } => {
             print!("{}", docs::render(topic));

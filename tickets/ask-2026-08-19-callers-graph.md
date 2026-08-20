@@ -28,7 +28,7 @@ find-references.
   Markdown inline links, reference links, and `@path` transclusions all count.
 - Handle the graph honestly: **cycles** must not hang or infinitely recurse, and a node may have
   **multiple parents**. Both designed in from the start, not retrofitted.
-- Add `rata graph [--format mermaid|dot] [--from <ref>] [--depth N]` for the occasional bird's-eye
+- Add `rata graph [--syntax mermaid|dot] [--from <ref>] [--depth N]` for the occasional bird's-eye
   picture. Rendering only — no layout opinions.
 - Unresolvable link targets are reported by `rata doctor` as broken edges rather than silently
   dropped, so the graph doubles as a dead-link check.
@@ -72,7 +72,7 @@ broken link.
 
 - 2026-08-19: Spec authored from design discussion. Not started.
 - 2026-08-20: Built as `src/graph.rs`, on top of the ref space from the previous slice.
-  `rata callers <ref>` and `rata graph [--format mermaid|dot] [--from <ref>] [--depth N]`.
+  `rata callers <ref>` and `rata graph [--syntax mermaid|dot] [--from <ref>] [--depth N]`.
 - 2026-08-20: **Code spans had to count as edges.** Running the AC's own verification failed at
   first: `rata callers context/PREFERENCES.md` found `AGENTS.md` but not `workflow/sdlc.md`, because
   sdlc.md's only mention of that file is a *backticked path in a table*, not a markdown link. The
@@ -112,6 +112,40 @@ broken link.
   cannot do.
 - Not done: attributing a *caller* to the heading it was written under. The source side stays
   file-granular plus a line number, which is what the AC asked for.
+
+### Fresh-eyes review (2026-08-20)
+
+**Blocking:**
+- **`callers` and `graph --from` returned a confident zero for any non-canonical spelling of a ref.**
+  Edges store the *canonical* ref, but matching compared against the address as typed. So
+  `callers memory/MEMORY.md` reported 0 while `callers memory:MEMORY` reported 7 — and
+  `memory/MEMORY.md` is the spelling that appears in `rata.toml`. For a find-references tool, a
+  wrong "nothing links to this" is worse than an error, because nothing prompts you to doubt it.
+  Both commands now canonicalize through the ref space first; every valid spelling gives the same
+  answer.
+
+**Should-fix, applied:**
+- **Link extraction dropped real links on three ordinary shapes.** The `]` closing an inline link
+  was found by first-match, so a linked image (`[![alt](pic.png)](target)`) or a nested label lost
+  the outer target; and an unbalanced `[` or backtick hit `break`, abandoning every link later on
+  that line. Bracket matching is now depth-aware, an unbalanced delimiter is treated as prose, and
+  scanning resumes inside link text so nested links are found too.
+- An image (`![alt](x.md)`) is no longer an edge — it is not something to navigate to — and an
+  escaped `\[` is literal text.
+- **One line naming the same target twice produced two callers.** A code span and an explicit link
+  to the same file on one line is one reference; edges are now deduped per (from, to, line).
+- `node_id` collided for genuinely distinct refs (`a-b.md` and `a_b.md` both sanitized to
+  `n_a_b_md`), emitting duplicate diagram nodes. A short hash of the real ref is appended.
+- **`graph` reused `--format` for the diagram language**, so it was the only command where
+  `--format json` failed even though `GraphReport` already derived `Serialize`. The diagram language
+  moved to `--syntax`; `--format text|json` now means what it means everywhere else.
+- The `hand_maintained_index` heuristic counted `../elsewhere/nix.md` as a link to the store's own
+  `nix.md`. Tightened.
+
+**Fixed earlier in the series but worth recording here:** the synthesized store index told readers
+to `rata only file <name>.md` while listing refs like `memory:nix` — a command that cannot take a
+ref. Since that text lands in every agent's packed context, it was a live wrong instruction; it now
+points at `rata show <ref>`.
 
 ### Checkpoints (memory boundaries)
 

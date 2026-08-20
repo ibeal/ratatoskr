@@ -10,7 +10,7 @@
 //! Files and headings are the same kind of thing at different scales, so one parser and one
 //! resolver serve `show`, `outline`, and (later) `callers`.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::{self, Display};
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -121,6 +121,15 @@ pub enum RefKind {
     Heading,
 }
 
+impl RefKind {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::File => "file",
+            Self::Heading => "heading",
+        }
+    }
+}
+
 #[derive(Debug, Serialize)]
 pub struct ChildRef {
     #[serde(rename = "ref")]
@@ -143,16 +152,32 @@ impl RefSpace {
         let mut canonical = BTreeMap::<PathBuf, String>::new();
 
         // Context files are addressable by their path relative to the scope that declared them,
-        // which is how they are written in rata.toml and in prose links.
+        // which is how they are written in rata.toml and in prose links. Two scopes can declare the
+        // same relative path (a local `AGENTS.md` shadowing the global one); that address becomes
+        // ambiguous rather than silently resolving to whichever was inserted last.
+        let mut ambiguous = BTreeSet::new();
         for entry in &manifest.context_entries {
             let Some(path) = entry.path() else { continue };
             if let Ok(relative) = path.strip_prefix(&entry.scope_root) {
                 let address = slashed(relative);
-                files.insert(address.clone(), path.to_path_buf());
+                match files.get(&address) {
+                    Some(existing) if existing != path => {
+                        ambiguous.insert(address.clone());
+                    }
+                    _ => {
+                        files.insert(address.clone(), path.to_path_buf());
+                    }
+                }
                 prefer_canonical(&mut canonical, path, address);
             }
+            // The absolute path is always unambiguous, so it stays the escape hatch.
             files.insert(path.display().to_string(), path.to_path_buf());
             prefer_canonical(&mut canonical, path, path.display().to_string());
+        }
+        for address in &ambiguous {
+            files.remove(address);
+            // An ambiguous relative address cannot be anyone's canonical name either.
+            canonical.retain(|_, name| name != address);
         }
 
         for store in outline::outline_stores(&manifest.stores, None, None)? {
@@ -256,6 +281,23 @@ impl RefSpace {
 
     fn candidates(&self, address: &str) -> Vec<String> {
         let needle = address.rsplit(['/', ':']).next().unwrap_or(address);
+
+        // An empty needle scores zero against everything, so there is nothing to rank. `memory:`
+        // and `` are exactly when the reader most needs to be shown what exists: list the store's
+        // own nodes, or the top of the ref space.
+        if needle.is_empty() {
+            let prefix = address.trim_end_matches(':');
+            let mut listed = self
+                .files
+                .keys()
+                .filter(|known| !known.starts_with('/'))
+                .filter(|known| prefix.is_empty() || known.starts_with(&format!("{prefix}:")))
+                .cloned()
+                .collect::<Vec<_>>();
+            listed.truncate(10);
+            return listed;
+        }
+
         let mut scored = self
             .files
             .keys()

@@ -112,6 +112,55 @@ with signatures.
   subheadings — with no descendants to exclude, a file's own body *is* the whole file. Special-casing
   files would have made depth mean two different things.
 
+### Fresh-eyes review (2026-08-20)
+
+Subagent, fed only the three diffs + the AC + the checklist. Findings applied:
+
+**Blocking:**
+- **A lone top-level heading was collapsed even when it was not an H1, deleting the section.** The
+  guard read `tree.len() == 1 && tree[0].children.iter().all(|c| c.level > 1)` — and `nest` can
+  never produce a child at or above its parent's level, so the second clause was *vacuously true*
+  and the guard was really just `tree.len() == 1`. A file whose only top-level heading is an H2
+  had that heading silently absorbed and its children re-rooted, making every ref for that file
+  wrong. Now `tree[0].level == 1`. Only an H1 titles a file.
+
+**Should-fix, applied:**
+- **Indented code blocks parsed as headings.** Indentation was trimmed before the `#` check, so a
+  4-space-indented `# comment` inside a list item became a heading and re-parented everything after
+  it. ATX indent is now capped at three columns, counting a tab as four.
+- **Duplicate and empty slugs produced refs that `outline` printed but `show` could not resolve.**
+  Two `## Dup` headings yielded the same ref; `## ---` slugified to the empty string and printed as
+  `file.md#`. Slugs are now made unique among siblings (`dup`, `dup-2`) and non-empty (`section`)
+  before addresses are built. Verified over the real corpus: all 33 heading refs `outline` prints
+  round-trip through `show`.
+- **An explicit `{#a/b}` anchor minted an unresolvable ref** — `/` is the heading-path separator, so
+  the address could never be walked, and the failure even suggested the ref that had just failed.
+  An anchor containing `/` or `#` is now refused and the title is slugified instead, matching how
+  `node_ref` already rejects separators in filenames.
+- Setext headings (a title over `===` or `---`) are now recognized; a trailing run of `#` is treated
+  as a closing sequence rather than part of the title; a tab after the hashes opens a heading; and
+  fence tracking remembers *which* marker opened, so a `~~~` line inside a ``` block no longer ends
+  it early.
+- **Two files sharing a scope-relative address silently last-wins.** A local `AGENTS.md` shadowing
+  the global one made that address resolve to whichever was inserted last, with the other reachable
+  only by absolute path. The address is now ambiguous rather than arbitrary, and the absolute path
+  stays the escape hatch. `lookup` already refused ambiguous *suffix* matches; exact keys now match
+  that behaviour.
+- **`rata outline <file-ref>` had no `--profile`.** Once outline resolved through the ref space, a
+  file pulled in by a profile could not be outlined at all. Added and threaded through.
+- An empty or store-only ref (`memory:`, ``) produced *no* candidates, because similarity against an
+  empty needle is zero for everything — the moment the reader most needs to be shown what exists.
+  It now lists the store's nodes.
+
+**Noted, not acted on:** `doctor` reads each store file several times (three store scans plus two
+reads per node, ~45 ms over 19 nodes). Real, but a plumbing refactor to thread one `RefSpace` and one
+outline set through `doctor` is disproportionate to a series already this large; recorded here rather
+than rushed.
+
+**Confirmed fine by the reviewer:** no reachable panics across a pathological fixture (multibyte
+titles, unbalanced brackets, bare `@`, lone backtick, CRLF, invalid UTF-8); determinism of `pack`,
+`outline`, `callers` and `graph`; cycle and multiple-parent handling.
+
 ### Checkpoints (memory boundaries)
 
 - **PR-up:** —

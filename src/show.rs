@@ -6,7 +6,7 @@ use serde::Serialize;
 use crate::errors::Result;
 use crate::headings::Heading;
 use crate::outline;
-use crate::refs::{self, ChildRef, Ref, RefKind, ResolvedRef};
+use crate::refs::{self, ChildRef, Ref, ResolvedRef};
 
 #[derive(Debug, Serialize)]
 pub struct ShowReport {
@@ -94,7 +94,7 @@ impl Display for ShowReport {
         writeln!(f)?;
         writeln!(f, "ref: {}", self.node.reference)?;
         writeln!(f, "path: {}", self.node.path.display())?;
-        writeln!(f, "kind: {}", kind_label(self.node.kind))?;
+        writeln!(f, "kind: {}", self.node.kind.label())?;
         writeln!(f, "signature: {}", self.node.signature)?;
         writeln!(f, "tier: {}", self.node.tier.label())?;
         writeln!(f, "depth: {}", self.depth)?;
@@ -141,13 +141,6 @@ fn write_child(f: &mut fmt::Formatter<'_>, child: &ChildRef) -> fmt::Result {
         child.reference,
         outline::truncate(&child.signature)
     )
-}
-
-fn kind_label(kind: RefKind) -> &'static str {
-    match kind {
-        RefKind::File => "file",
-        RefKind::Heading => "heading",
-    }
 }
 
 #[cfg(test)]
@@ -311,7 +304,7 @@ A PR body is a pointer, not a report.
         let (root, global_root) = fixture("outline-file-ref");
 
         let report =
-            outline::build_file_outline(&root, Some(&global_root), "workflow/sdlc.md", None)
+            outline::build_file_outline(&root, Some(&global_root), &[], "workflow/sdlc.md", None)
                 .unwrap();
         let file = report.file.as_ref().unwrap();
         let refs = file
@@ -330,9 +323,14 @@ A PR body is a pointer, not a report.
         assert!(report.stores.is_empty());
 
         // --depth caps the tree the same way it caps a store outline.
-        let capped =
-            outline::build_file_outline(&root, Some(&global_root), "workflow/sdlc.md", Some(1))
-                .unwrap();
+        let capped = outline::build_file_outline(
+            &root,
+            Some(&global_root),
+            &[],
+            "workflow/sdlc.md",
+            Some(1),
+        )
+        .unwrap();
         assert_eq!(capped.file.as_ref().unwrap().headings.len(), 2);
 
         fs::remove_dir_all(root).unwrap();

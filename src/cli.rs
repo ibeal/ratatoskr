@@ -102,7 +102,7 @@ pub enum Commands {
     Outline {
         /// A store name, or a file ref to outline its headings. Defaults to every resolved store.
         target: Option<String>,
-        /// Cap how many path segments deep into a store nodes are listed. Defaults to unlimited.
+        /// Cap how deep to descend: store subdirectories, or heading levels for a file ref.
         #[arg(long, value_parser = clap::value_parser!(u16).range(1..))]
         depth: Option<u16>,
         /// Resolve relative to this directory instead of the current working directory.
@@ -111,6 +111,9 @@ pub enum Commands {
         /// Override the global rata root for this invocation.
         #[arg(long)]
         global_root: Option<PathBuf>,
+        /// Apply one or more additive context profiles, widening the ref space.
+        #[arg(long = "profile")]
+        profiles: Vec<String>,
         /// Choose human-readable or JSON output.
         #[arg(long, value_enum, default_value_t = OutputFormat::Text)]
         format: OutputFormat,
@@ -134,9 +137,12 @@ pub enum Commands {
     },
     /// Render the link graph. Rendering only — no layout opinions.
     Graph {
-        /// Diagram syntax to emit.
-        #[arg(long, value_enum, default_value_t = GraphFormatArg::Mermaid)]
-        format: GraphFormatArg,
+        /// Diagram syntax to emit as text.
+        #[arg(long, value_enum, default_value_t = GraphSyntax::Mermaid)]
+        syntax: GraphSyntax,
+        /// Choose the rendered diagram or the raw graph as JSON.
+        #[arg(long, value_enum, default_value_t = OutputFormat::Text)]
+        format: OutputFormat,
         /// Restrict to what is reachable from this ref.
         #[arg(long)]
         from: Option<String>,
@@ -200,7 +206,7 @@ pub enum OutputFormat {
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq, ValueEnum)]
-pub enum GraphFormatArg {
+pub enum GraphSyntax {
     #[default]
     Mermaid,
     Dot,

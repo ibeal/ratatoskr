@@ -230,7 +230,7 @@ fn render_store_index(
         return Ok(Some(out));
     }
     out.push_str(&format!(
-        "{} nodes. Read one with `rata only file <name>.md`.\n\n",
+        "{} nodes. Read one with `rata show <ref>`, or its sections with `rata outline <ref>`.\n\n",
         outline.nodes.len()
     ));
     for node in &outline.nodes {

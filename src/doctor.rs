@@ -197,12 +197,13 @@ fn hand_maintained_indexes(manifest: &ResolvedManifest) -> Result<Vec<DoctorWarn
             };
             let others = siblings
                 .iter()
-                .filter(|sibling| **sibling != node.reference)
+                .copied()
+                .filter(|sibling| *sibling != node.reference)
                 .collect::<Vec<_>>();
             let links = others
                 .iter()
                 .filter(|sibling| links_to_sibling(&contents, sibling))
-                .map(|sibling| (**sibling).to_string())
+                .map(|sibling| (*sibling).to_string())
                 .collect::<Vec<_>>();
 
             if is_pointer_list(&contents, &others) && links.len() * 2 >= others.len() {
@@ -220,7 +221,7 @@ fn hand_maintained_indexes(manifest: &ResolvedManifest) -> Result<Vec<DoctorWarn
 
 /// The shape that distinguishes an index from prose that happens to cite a sibling: the file *is* a
 /// list of pointers. One inline cross-reference in a paragraph is not an index.
-fn is_pointer_list(contents: &str, siblings: &[&&str]) -> bool {
+fn is_pointer_list(contents: &str, siblings: &[&str]) -> bool {
     let items = contents
         .lines()
         .map(str::trim)
@@ -238,13 +239,15 @@ fn is_pointer_list(contents: &str, siblings: &[&&str]) -> bool {
     items.len() >= 2 && pointers * 2 >= items.len() && pointers > 0
 }
 
-/// A markdown or `@`-import link whose target resolves to the sibling's file.
+/// A markdown or `@`-import link whose target resolves to the sibling's file. The target must be
+/// the sibling itself, not a same-named file in another directory — `../elsewhere/nix.md` is a
+/// different document from the store's own `nix.md`.
 fn links_to_sibling(contents: &str, sibling: &str) -> bool {
     let file = format!("{sibling}.md");
     contents.contains(&format!("({file})"))
         || contents.contains(&format!("`{file}`"))
         || contents.contains(&format!("@{file}"))
-        || contents.contains(&format!("/{file}"))
+        || contents.contains(&format!("(./{file})"))
 }
 
 /// Report where every node's signature came from, so thin signatures are visible without

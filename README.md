@@ -179,8 +179,14 @@ address when someone rewords the heading. Everything else falls back to heading-
 which costs nothing to author and is fragile only under renames. Segments match an anchor, the
 slugified title, or the title itself, so `#PR-summaries` and `#PR summaries` both resolve.
 
-A lone top-level heading is treated as the file's title rather than a section inside it — hence
-`AGENTS.md#Safety`, not `AGENTS.md#agents-md-personal-operating-manual/Safety`.
+A lone **H1** is treated as the file's title rather than a section inside it — hence
+`AGENTS.md#Safety`, not `AGENTS.md#agents-md-personal-operating-manual/Safety`. A file whose only
+top-level heading is an H2 or deeper is not titled by it, so that heading stays a real section.
+
+Both ATX (`## Title`) and setext (a title over `===` or `---`) headings are recognized; a trailing
+run of `#` is a closing sequence, not part of the title. Every ref `outline` prints is guaranteed
+non-empty and unique among its siblings — two `## Notes` sections become `notes` and `notes-2` — so
+a printed ref can always be pasted straight into `rata show`.
 
 An unresolvable ref fails with the closest candidates listed, never a bare error:
 
@@ -200,7 +206,7 @@ you edit or move something.
 ```text
 rata callers context/PREFERENCES.md
 rata callers 'AGENTS.md#Safety'
-rata graph --format mermaid --from AGENTS.md --depth 2
+rata graph --syntax mermaid --from AGENTS.md --depth 2
 rata graph --format dot
 ```
 
@@ -231,6 +237,12 @@ or an include is *not* reported — that is unaddressable, not dead, and conflat
 `doctor` cry wolf.
 
 `graph` is rendering only. No layout opinions: pipe the Mermaid or DOT output wherever you like.
+`--syntax` picks the diagram language; `--format json` gives the raw node and edge lists instead.
+
+A ref may be spelled several ways — a store ref, a scope-relative path, an absolute path, or an
+unambiguous suffix — and `callers` and `graph --from` accept any of them. Two scopes declaring the
+same relative path make that spelling ambiguous rather than silently resolving to one of them; use
+the absolute path to disambiguate.
 
 ## Store refs in `[context].include`
 
@@ -321,11 +333,12 @@ rata outline
 rata outline memory
 rata outline memory --depth 1
 rata outline AGENTS.md
+rata outline workflow/sdlc.md --profile build
 rata show memory:containerized-agents
 rata show AGENTS.md#Safety
 rata show 'workflow/sdlc.md#Phases/PR-summaries' --depth 1
 rata callers context/PREFERENCES.md
-rata graph --format mermaid --from AGENTS.md --depth 2
+rata graph --syntax mermaid --from AGENTS.md --depth 2
 rata pack
 rata only profile build
 rata only scope local

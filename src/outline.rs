@@ -152,10 +152,11 @@ pub fn store_named(
 pub fn build_file_outline(
     cwd: &Path,
     global_root_override: Option<&Path>,
+    selected_profiles: &[String],
     reference: &str,
     depth: Option<usize>,
 ) -> Result<OutlineReport> {
-    let (space, manifest) = refs::ref_space(cwd, global_root_override, &[])?;
+    let (space, manifest) = refs::ref_space(cwd, global_root_override, selected_profiles)?;
     let node = space.resolve(&crate::refs::Ref::parse(reference))?;
     let base = node
         .reference

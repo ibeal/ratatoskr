@@ -102,6 +102,10 @@ impl ContextGraph {
         edges.sort_by(|left, right| {
             (&left.from, left.line, &left.to).cmp(&(&right.from, right.line, &right.to))
         });
+        // One line naming the same target twice (a code span *and* a link) is one reference.
+        edges.dedup_by(|later, first| {
+            (&later.from, later.line, &later.to) == (&first.from, first.line, &first.to)
+        });
         broken.sort_by(|left, right| (&left.from, left.line).cmp(&(&right.from, right.line)));
 
         Self {
@@ -111,15 +115,17 @@ impl ContextGraph {
         }
     }
 
-    /// Every node that links to `target`. One hop: "find references" is a one-hop question, and a
+    /// Every node that links to `file`. One hop: "find references" is a one-hop question, and a
     /// transitive answer over a densely cross-linked corpus is closer to "everything".
-    pub fn callers(&self, target: &Ref) -> Vec<&Edge> {
-        let wanted_file = target.file_address();
-        let wanted_heading = target.heading.join("/");
+    ///
+    /// `file` must be the *canonical* ref. Edges are stored canonically, so comparing against the
+    /// spelling a user typed would report a confident "nothing links to this" for every alias.
+    pub fn callers(&self, file: &str, heading: &[String]) -> Vec<&Edge> {
+        let wanted_heading = heading.join("/");
 
         self.edges
             .iter()
-            .filter(|edge| edge.to == wanted_file)
+            .filter(|edge| edge.to == file)
             .filter(|edge| {
                 // A ref naming a heading only matches links that reached that heading. A ref naming
                 // a file matches every link into it, fragment or not.
@@ -229,10 +235,15 @@ fn line_targets(line: &str) -> Vec<(String, bool)> {
     let mut index = 0;
     while index < bytes.len() {
         match bytes[index] {
-            // `[text](target)` — an inline link. The closing `]` must be followed by `(`.
-            '[' => {
-                let Some(close) = find(&bytes, index + 1, ']') else {
-                    break;
+            // `[text](target)` — an inline link. Link text may itself contain brackets (a linked
+            // image, `[![alt](pic.png)](target)`, or a nested label), so the matching `]` is found
+            // by depth rather than by the first one.
+            '[' if is_link_open(&bytes, index) => {
+                let Some(close) = matching_bracket(&bytes, index) else {
+                    // An unbalanced `[` is ordinary prose; keep scanning the rest of the line
+                    // rather than abandoning every link after it.
+                    index += 1;
+                    continue;
                 };
                 let end = (bytes.get(close + 1) == Some(&'('))
                     .then(|| find(&bytes, close + 2, ')'))
@@ -243,10 +254,11 @@ fn line_targets(line: &str) -> Vec<(String, bool)> {
                     if let Some(target) = target.split_whitespace().next() {
                         targets.push((target.to_string(), true));
                     }
-                    index = end + 1;
+                    // Resume *inside* the link text, so a nested link is found too.
+                    index += 1;
                     continue;
                 }
-                index = close + 1;
+                index += 1;
             }
             // `@path` — a transclusion. Only at the start of a line or after whitespace, so an
             // email address in prose is not an edge.
@@ -268,7 +280,9 @@ fn line_targets(line: &str) -> Vec<(String, bool)> {
             // counted as a *broken* edge, since a mentioned path may legitimately live elsewhere.
             '`' => {
                 let Some(close) = find(&bytes, index + 1, '`') else {
-                    break;
+                    // An unmatched backtick is prose; the rest of the line still holds links.
+                    index += 1;
+                    continue;
                 };
                 let span: String = bytes[index + 1..close].iter().collect();
                 if is_path_like(&span) {
@@ -297,6 +311,43 @@ fn reference_definition(line: &str) -> Option<&str> {
     let (_, rest) = rest.split_once("]:")?;
     let target = rest.split_whitespace().next()?;
     Some(target)
+}
+
+/// The `]` that closes the `[` at `open`, counting nested pairs.
+fn matching_bracket(chars: &[char], open: usize) -> Option<usize> {
+    let mut depth = 0usize;
+    for index in open..chars.len() {
+        match chars[index] {
+            '[' if !is_escaped(chars, index) => depth += 1,
+            ']' if !is_escaped(chars, index) => {
+                depth -= 1;
+                if depth == 0 {
+                    return Some(index);
+                }
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
+/// A `[` opens a link unless it is escaped, or preceded by an unescaped `!` — which makes it an
+/// image, not a link to follow.
+fn is_link_open(chars: &[char], index: usize) -> bool {
+    if is_escaped(chars, index) {
+        return false;
+    }
+    let image = index > 0 && chars[index - 1] == '!' && !is_escaped(chars, index - 1);
+    !image
+}
+
+/// A backslash-escaped bracket is literal text, not link syntax.
+fn is_escaped(chars: &[char], index: usize) -> bool {
+    let mut slashes = 0;
+    while index > slashes && chars[index - 1 - slashes] == '\\' {
+        slashes += 1;
+    }
+    slashes % 2 == 1
 }
 
 fn find(chars: &[char], from: usize, wanted: char) -> Option<usize> {
@@ -416,12 +467,18 @@ pub fn build_callers(
     let parsed = Ref::parse(reference);
     // Resolve first, so a typo fails with candidates rather than reporting "no callers".
     let resolved = space.resolve(&parsed)?;
+    // Then canonicalize: a file may be addressable several ways (a store node that is also a
+    // context include, an absolute path, a unique suffix), and edges only carry one of them.
+    let canonical = space
+        .lookup_ref(&parsed.file_address())
+        .unwrap_or(&resolved.reference)
+        .to_string();
     let graph = ContextGraph::build(&space);
 
     Ok(CallersReport {
-        reference: resolved.reference,
+        reference: heading_suffixed(&canonical, &parsed.heading),
         callers: graph
-            .callers(&parsed)
+            .callers(&canonical, &parsed.heading)
             .into_iter()
             .map(|edge| Caller {
                 from: edge.from.clone(),
@@ -431,6 +488,13 @@ pub fn build_callers(
             })
             .collect(),
     })
+}
+
+fn heading_suffixed(file: &str, heading: &[String]) -> String {
+    if heading.is_empty() {
+        return file.to_string();
+    }
+    format!("{file}#{}", heading.join("/"))
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -463,10 +527,12 @@ pub fn build_graph(
     let (nodes, edges) = match from {
         None => (graph.nodes.clone(), graph.edges.clone()),
         Some(from) => {
-            let root = space.resolve(&Ref::parse(from))?.reference;
-            let root = root
-                .split_once('#')
-                .map_or(root.clone(), |(base, _)| base.to_string());
+            let parsed = Ref::parse(from);
+            space.resolve(&parsed)?;
+            let root = space
+                .lookup_ref(&parsed.file_address())
+                .unwrap_or(&parsed.target)
+                .to_string();
             let included = graph.reachable(&root, depth);
             (
                 graph
@@ -557,12 +623,19 @@ fn dedup_edges(edges: &[Edge]) -> BTreeSet<(String, String)> {
         .collect()
 }
 
+/// A diagram-safe identifier. Sanitizing alone would collide (`a-b.md` and `a_b.md` both become
+/// `a_b_md`), so a short hash of the real ref is appended.
 fn node_id(reference: &str) -> String {
-    let id = reference
+    let sanitized = reference
         .chars()
         .map(|c| if c.is_alphanumeric() { c } else { '_' })
         .collect::<String>();
-    format!("n_{id}")
+    let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
+    for byte in reference.as_bytes() {
+        hash ^= u64::from(*byte);
+        hash = hash.wrapping_mul(0x100_0000_01b3);
+    }
+    format!("n_{sanitized}_{:x}", hash & 0xffff_ffff)
 }
 
 /// Broken edges, for `doctor`.
@@ -571,11 +644,11 @@ pub fn broken_edges(manifest: &ResolvedManifest) -> Result<Vec<BrokenEdge>> {
     Ok(ContextGraph::build(&space).broken)
 }
 
-impl From<crate::cli::GraphFormatArg> for GraphFormat {
-    fn from(value: crate::cli::GraphFormatArg) -> Self {
+impl From<crate::cli::GraphSyntax> for GraphFormat {
+    fn from(value: crate::cli::GraphSyntax) -> Self {
         match value {
-            crate::cli::GraphFormatArg::Mermaid => Self::Mermaid,
-            crate::cli::GraphFormatArg::Dot => Self::Dot,
+            crate::cli::GraphSyntax::Mermaid => Self::Mermaid,
+            crate::cli::GraphSyntax::Dot => Self::Dot,
         }
     }
 }
@@ -658,6 +731,73 @@ mod tests {
         .unwrap();
         assert_eq!(heading.callers.len(), 1);
         assert_eq!(heading.callers[0].from, "workflow/sdlc.md");
+
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn nested_brackets_and_unbalanced_delimiters_do_not_lose_links() {
+        let cases: &[(&str, Vec<&str>)] = &[
+            // A linked image: the first `]` belongs to the image, not the link.
+            // The image is skipped; only the outer link is an edge.
+            ("[![img](pic.png)](T.md)", vec!["T.md"]),
+            // A nested label.
+            ("[nested [inner] label](T.md)", vec!["T.md"]),
+            // An unmatched backtick must not abandon the rest of the line.
+            ("`unclosed and then [link](T.md)", vec!["T.md"]),
+            // Nor an unbalanced bracket.
+            ("[stray and then [x](T.md)", vec!["T.md"]),
+            // An image on its own is not a navigational edge.
+            ("![alt](pic.md)", vec![]),
+            // An escaped bracket is literal text.
+            ("\\[escaped\\](T.md)", vec![]),
+        ];
+
+        for (input, expected) in cases {
+            let found = extract_links(input)
+                .iter()
+                .map(|link| link.target.clone())
+                .collect::<Vec<_>>();
+            assert_eq!(&found, expected, "input: {input}");
+        }
+    }
+
+    #[test]
+    fn one_line_naming_a_target_twice_is_one_edge() {
+        let (root, global_root) = fixture("graph-dedup");
+        // A code span and an explicit link to the same file, on one line.
+        fs::write(
+            global_root.join("AGENTS.md"),
+            "# Agents\n\nSee `context/PREFERENCES.md` at [prefs](context/PREFERENCES.md).\n",
+        )
+        .unwrap();
+
+        let report =
+            build_callers(&root, Some(&global_root), &[], "context/PREFERENCES.md").unwrap();
+        let from_agents = report
+            .callers
+            .iter()
+            .filter(|caller| caller.from == "AGENTS.md")
+            .count();
+        assert_eq!(from_agents, 1);
+
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn callers_accepts_any_valid_spelling_of_a_ref() {
+        let (root, global_root) = fixture("graph-aliases");
+        // memory:note is reachable by store ref; PREFERENCES by relative path, absolute path,
+        // and unique suffix. Every spelling must give the same answer.
+        let absolute = global_root.join("context/PREFERENCES.md");
+        for reference in [
+            "context/PREFERENCES.md",
+            "PREFERENCES.md",
+            absolute.to_str().unwrap(),
+        ] {
+            let report = build_callers(&root, Some(&global_root), &[], reference).unwrap();
+            assert_eq!(report.callers.len(), 2, "spelling: {reference}");
+        }
 
         fs::remove_dir_all(root).unwrap();
     }

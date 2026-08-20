@@ -65,8 +65,11 @@ workflow/sdlc.md#Phases/PR-summaries   a nested heading
 `--depth 0` (the default) gives the node's body plus its children's signatures — enough to pick the
 next step without loading it. `--depth N` descends N levels with bodies. A heading segment matches an
 explicit `{#anchor}`, the slugified title, or the title itself, so `#PR-summaries` and
-`#PR summaries` are the same ref. An unresolvable ref lists the closest candidates; read those rather
-than guessing paths.
+`#PR summaries` are the same ref. Any ref `outline` prints can be pasted straight into `show`. An
+unresolvable ref lists the closest candidates; read those rather than guessing paths.
+
+Add `--profile <name>` when the file you are addressing is pulled in by a profile rather than the
+base include — otherwise it is not in the ref space and will not resolve.
 
 ## Before editing a context file
 
@@ -82,8 +85,8 @@ One hop, which is what find-references means. Edges come from prose: markdown li
 definitions, `@path` transclusions, and paths named in code spans. Links inside fenced blocks do not
 count.
 
-`rata graph [--format mermaid|dot] [--from <ref>] [--depth N]` renders the graph when a picture
-helps. `rata doctor` reports dead links as broken edges.
+`rata graph [--syntax mermaid|dot] [--from <ref>] [--depth N]` renders the graph when a picture
+helps, or `--format json` for the raw nodes and edges. `rata doctor` reports dead links as broken edges.
 
 ## Store refs in the pack
 
