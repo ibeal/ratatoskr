@@ -3,25 +3,40 @@ mod config;
 mod docs;
 mod doctor;
 mod errors;
+mod frontmatter;
+mod graph;
+mod headings;
 mod init;
+mod outline;
 mod pack;
+mod refs;
 mod resolve;
+mod show;
+#[cfg(test)]
+mod test_support;
 
 use std::path::PathBuf;
+use std::process::ExitCode;
 
 use clap::Parser;
 
 use crate::cli::{Cli, Commands, DoctorTarget, InitScope, OutputFormat, ResolveTarget};
 use crate::errors::Result;
 
-fn main() {
-    if let Err(err) = run() {
-        eprintln!("error: {err}");
-        std::process::exit(1);
+/// `doctor` exits non-zero when it finds problems, so a hook or CI step can gate on it.
+const UNHEALTHY: u8 = 2;
+
+fn main() -> ExitCode {
+    match run() {
+        Ok(code) => code,
+        Err(err) => {
+            eprintln!("error: {err}");
+            ExitCode::FAILURE
+        }
     }
 }
 
-fn run() -> Result<()> {
+fn run() -> Result<ExitCode> {
     let cli = Cli::parse();
 
     match cli.command {
@@ -86,6 +101,92 @@ fn run() -> Result<()> {
                 OutputFormat::Json => println!("{}", serde_json::to_string_pretty(&bundle)?),
             }
         }
+        Commands::Show {
+            reference,
+            depth,
+            cwd,
+            global_root,
+            profiles,
+            format,
+        } => {
+            let cwd = cwd.unwrap_or(std::env::current_dir()?);
+            let report =
+                show::build_show(&cwd, global_root.as_deref(), &profiles, &reference, depth)?;
+            match format {
+                OutputFormat::Text => print!("{report}"),
+                OutputFormat::Json => println!("{}", serde_json::to_string_pretty(&report)?),
+            }
+        }
+        Commands::Outline {
+            target,
+            depth,
+            cwd,
+            global_root,
+            profiles,
+            format,
+        } => {
+            let cwd = cwd.unwrap_or(std::env::current_dir()?);
+            let depth = depth.map(usize::from);
+            // A store name and a file ref share one positional slot: a store wins when the name
+            // matches one, so `rata outline memory` keeps meaning the store.
+            let report =
+                match outline::store_named(&cwd, global_root.as_deref(), target.as_deref())? {
+                    true => outline::build_outline(
+                        &cwd,
+                        global_root.as_deref(),
+                        target.as_deref(),
+                        depth,
+                    )?,
+                    false => outline::build_file_outline(
+                        &cwd,
+                        global_root.as_deref(),
+                        &profiles,
+                        target.as_deref().unwrap_or_default(),
+                        depth,
+                    )?,
+                };
+            match format {
+                OutputFormat::Text => print!("{report}"),
+                OutputFormat::Json => println!("{}", serde_json::to_string_pretty(&report)?),
+            }
+        }
+        Commands::Callers {
+            reference,
+            cwd,
+            global_root,
+            profiles,
+            format,
+        } => {
+            let cwd = cwd.unwrap_or(std::env::current_dir()?);
+            let report = graph::build_callers(&cwd, global_root.as_deref(), &profiles, &reference)?;
+            match format {
+                OutputFormat::Text => print!("{report}"),
+                OutputFormat::Json => println!("{}", serde_json::to_string_pretty(&report)?),
+            }
+        }
+        Commands::Graph {
+            syntax,
+            format,
+            from,
+            depth,
+            cwd,
+            global_root,
+            profiles,
+        } => {
+            let cwd = cwd.unwrap_or(std::env::current_dir()?);
+            let report = graph::build_graph(
+                &cwd,
+                global_root.as_deref(),
+                &profiles,
+                syntax.into(),
+                from.as_deref(),
+                depth,
+            )?;
+            match format {
+                OutputFormat::Text => print!("{report}"),
+                OutputFormat::Json => println!("{}", serde_json::to_string_pretty(&report)?),
+            }
+        }
         Commands::Docs { topic } => {
             print!("{}", docs::render(topic));
         }
@@ -105,6 +206,22 @@ fn run() -> Result<()> {
                         OutputFormat::Json => {
                             println!("{}", serde_json::to_string_pretty(&report)?)
                         }
+                    }
+                    if !report.healthy {
+                        return Ok(ExitCode::from(UNHEALTHY));
+                    }
+                }
+                Some(DoctorTarget::Nodes { store }) => {
+                    let report =
+                        doctor::run_nodes_doctor(&cwd, global_root.as_deref(), store.as_deref())?;
+                    match format {
+                        OutputFormat::Text => print!("{report}"),
+                        OutputFormat::Json => {
+                            println!("{}", serde_json::to_string_pretty(&report)?)
+                        }
+                    }
+                    if !report.healthy {
+                        return Ok(ExitCode::from(UNHEALTHY));
                     }
                 }
                 Some(DoctorTarget::Stores) => {
@@ -131,7 +248,7 @@ fn run() -> Result<()> {
         }
     }
 
-    Ok(())
+    Ok(ExitCode::SUCCESS)
 }
 
 fn default_root_for_init(scope: InitScope) -> PathBuf {

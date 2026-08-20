@@ -512,9 +512,8 @@ fn should_fetch_remote(path: &Path, ttl: i64) -> bool {
 
 #[cfg(test)]
 mod tests {
+    use crate::test_support::temp_dir;
     use std::fs;
-    use std::path::PathBuf;
-    use std::time::{SystemTime, UNIX_EPOCH};
 
     use super::{
         default_global_root, discover_local_roots, expand_home_path, home_dir, load_local_scopes,
@@ -572,18 +571,5 @@ mod tests {
     #[test]
     fn default_global_root_uses_hidden_home_directory() {
         assert_eq!(default_global_root(), home_dir().join(".rata"));
-    }
-
-    fn temp_dir(label: &str) -> PathBuf {
-        let unique = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_nanos();
-        let path = std::env::temp_dir().join(format!("rata-{label}-{unique}"));
-        if path.exists() {
-            fs::remove_dir_all(&path).unwrap();
-        }
-        fs::create_dir_all(&path).unwrap();
-        path
     }
 }

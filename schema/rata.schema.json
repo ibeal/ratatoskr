@@ -1,7 +1,7 @@
 {
   "$schema": "http://json-schema.org/draft-04/schema#",
   "title": "Ratatoskr scope config",
-  "description": "Schema for rata.toml files used by Ratatoskr.",
+  "description": "Schema for rata.toml files used by Ratatoskr. This file owns topology and eagerness: which stores exist, where they live, what is a root, and what each profile pulls. Per-file frontmatter owns self-description only (description, tags) and can never change whether a file is packed; `rata doctor` fails if it tries. Symmetrically, this file never enumerates individual files inside a store -- it names the store and the contents self-describe.",
   "type": "object",
   "additionalProperties": false,
   "properties": {
@@ -15,7 +15,7 @@
     },
     "profiles": {
       "type": "object",
-      "description": "Named additive context overlays.",
+      "description": "Named additive context overlays. Profiles are the eager selector: they decide what `pack` emits. A profile may reference a tag as a filter predicate, because the curator still decides; a file may never pull itself into a profile.",
       "additionalProperties": {
         "$ref": "#/definitions/profileConfig"
       }
@@ -32,7 +32,7 @@
     },
     "stores": {
       "type": "object",
-      "description": "Named durable data stores.",
+      "description": "Named durable data stores. Stores are the filesystem -- where bytes live -- not a selector. Declare one when its contents must be mounted, synced, scoped, or written to independently; use tags for subject-matter grouping instead. Never list the files inside a store here.",
       "additionalProperties": {
         "oneOf": [
           {
@@ -59,7 +59,7 @@
           "items": {
             "type": "string"
           },
-          "description": "Context file paths relative to the scope root."
+          "description": "Context entries in load order. Each is either a file path relative to the scope root, or a store ref -- a bare store name followed by a colon, e.g. \"memory:\" -- which packs that store's computed outline inline instead of a file's contents."
         }
       }
     },

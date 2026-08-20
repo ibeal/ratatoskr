@@ -85,18 +85,97 @@ pub struct MissingContextFile {
     pub source: ContextSource,
 }
 
+#[derive(Debug, Serialize)]
+pub struct UnknownContextStore {
+    pub store: String,
+    pub scope_kind: String,
+    pub scope_root: PathBuf,
+    pub source: ContextSource,
+}
+
 #[derive(Debug)]
 pub struct ManifestInspection {
     pub manifest: ResolvedManifest,
     pub missing_context_files: Vec<MissingContextFile>,
+    pub unknown_context_stores: Vec<UnknownContextStore>,
 }
 
 #[derive(Clone, Debug, Serialize)]
 pub struct ResolvedContextEntry {
-    pub path: PathBuf,
+    #[serde(flatten)]
+    pub target: ContextTarget,
     pub scope_kind: String,
     pub scope_root: PathBuf,
     pub source: ContextSource,
+}
+
+/// What an `[context].include` entry resolves to. A plain path is a file to read; `<store>:` is a
+/// request for that store's computed outline, which has no file behind it.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[serde(tag = "target_kind", rename_all = "snake_case")]
+pub enum ContextTarget {
+    File { path: PathBuf },
+    StoreIndex { store: String },
+}
+
+impl ContextTarget {
+    /// Parse one `[context].include` entry. `memory:` is a store ref; anything else is a path
+    /// relative to the scope root.
+    pub fn parse(root: &Path, entry: &str) -> Self {
+        match store_ref(entry) {
+            Some(store) => Self::StoreIndex {
+                store: store.to_string(),
+            },
+            None => Self::File {
+                path: root.join(entry),
+            },
+        }
+    }
+
+    pub fn path(&self) -> Option<&Path> {
+        match self {
+            Self::File { path } => Some(path),
+            Self::StoreIndex { .. } => None,
+        }
+    }
+
+    /// How the entry is named in human-readable output.
+    pub fn label(&self) -> String {
+        match self {
+            Self::File { path } => path.display().to_string(),
+            Self::StoreIndex { store } => format!("{store}:"),
+        }
+    }
+}
+
+/// A store ref is a bare store name followed by a colon and nothing else, e.g. `memory:`. The
+/// trailing colon is what distinguishes it from a relative path.
+fn store_ref(entry: &str) -> Option<&str> {
+    let name = entry.strip_suffix(':')?;
+    let valid = !name.is_empty()
+        && !name.contains('/')
+        && !name.contains(':')
+        && name
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_');
+    valid.then_some(name)
+}
+
+impl ResolvedContextEntry {
+    pub fn path(&self) -> Option<&Path> {
+        self.target.path()
+    }
+
+    fn is_missing_file(&self) -> bool {
+        self.path().is_some_and(is_missing_file)
+    }
+
+    fn unknown_store(&self, stores: &BTreeMap<String, ResolvedStore>) -> bool {
+        match &self.target {
+            ContextTarget::StoreIndex { store } => !stores.contains_key(store),
+            ContextTarget::File { .. } => false,
+        }
+    }
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -198,18 +277,37 @@ pub fn inspect_manifest(
 
     let missing_context_files = context_entries
         .iter()
-        .filter(|entry| is_missing_file(&entry.path))
+        .filter(|entry| entry.is_missing_file())
         .cloned()
         .map(|entry| MissingContextFile {
-            path: entry.path,
+            path: entry.path().unwrap_or(Path::new("")).to_path_buf(),
             scope_kind: entry.scope_kind,
             scope_root: entry.scope_root,
             source: entry.source,
         })
         .collect();
 
+    let stores = compose_stores(store_layers);
+
+    // A store ref naming a store that no scope declares is as absent as a missing file, and is
+    // treated the same way: reported by `doctor`, and only fatal when allow_missing is false.
+    let unknown_context_stores = context_entries
+        .iter()
+        .filter(|entry| entry.unknown_store(&stores))
+        .cloned()
+        .filter_map(|entry| match entry.target {
+            ContextTarget::StoreIndex { store } => Some(UnknownContextStore {
+                store,
+                scope_kind: entry.scope_kind,
+                scope_root: entry.scope_root,
+                source: entry.source,
+            }),
+            ContextTarget::File { .. } => None,
+        })
+        .collect();
+
     if settings.allow_missing {
-        context_entries.retain(|entry| !is_missing_file(&entry.path));
+        context_entries.retain(|entry| !entry.is_missing_file() && !entry.unknown_store(&stores));
         context_files.retain(|path| !is_missing_file(path));
         for scope in &mut scopes {
             scope
@@ -218,7 +316,7 @@ pub fn inspect_manifest(
             scope.context_files.retain(|path| !is_missing_file(path));
             scope
                 .context_entries
-                .retain(|entry| !is_missing_file(&entry.path));
+                .retain(|entry| !entry.is_missing_file() && !entry.unknown_store(&stores));
             for profile in &mut scope.active_profiles {
                 profile.context_files.retain(|path| !is_missing_file(path));
             }
@@ -227,8 +325,6 @@ pub fn inspect_manifest(
             }
         }
     }
-
-    let stores = compose_stores(store_layers);
 
     Ok(ManifestInspection {
         manifest: ResolvedManifest {
@@ -252,6 +348,7 @@ pub fn inspect_manifest(
             remote_files,
         },
         missing_context_files,
+        unknown_context_stores,
     })
 }
 
@@ -260,20 +357,15 @@ fn resolve_scope(
     selected_profiles: &[String],
     matched_profiles: &mut BTreeSet<String>,
 ) -> ResolvedScope {
-    let base_context_files = scope
-        .config
-        .context
-        .include
-        .iter()
-        .map(|entry| scope.root.join(entry))
-        .collect::<Vec<_>>();
+    let base_targets = resolve_targets(scope, &scope.config.context.include);
+    let base_context_files = file_paths(&base_targets);
 
     let mut context_files = base_context_files.clone();
-    let mut context_entries = base_context_files
+    let mut context_entries = base_targets
         .iter()
         .cloned()
-        .map(|path| ResolvedContextEntry {
-            path,
+        .map(|target| ResolvedContextEntry {
+            target,
             scope_kind: scope.kind.label().to_string(),
             scope_root: scope.root.clone(),
             source: ContextSource::Base,
@@ -284,19 +376,15 @@ fn resolve_scope(
     for profile_name in selected_profiles {
         if let Some(profile) = scope.config.profiles.get(profile_name) {
             matched_profiles.insert(profile_name.clone());
-            let profile_files = profile
-                .include
-                .iter()
-                .map(|entry| scope.root.join(entry))
-                .collect::<Vec<_>>();
+            let profile_targets = resolve_targets(scope, &profile.include);
+            let profile_files = file_paths(&profile_targets);
             push_unique_paths(&mut context_files, profile_files.iter().cloned());
             push_unique_entries(
                 &mut context_entries,
-                profile_files
-                    .iter()
-                    .cloned()
-                    .map(|path| ResolvedContextEntry {
-                        path,
+                profile_targets
+                    .into_iter()
+                    .map(|target| ResolvedContextEntry {
+                        target,
                         scope_kind: scope.kind.label().to_string(),
                         scope_root: scope.root.clone(),
                         source: ContextSource::Profile {
@@ -318,11 +406,7 @@ fn resolve_scope(
         .map(|(name, profile)| ScopeProfile {
             name: name.clone(),
             description: profile.description.clone(),
-            context_files: profile
-                .include
-                .iter()
-                .map(|entry| scope.root.join(entry))
-                .collect(),
+            context_files: file_paths(&resolve_targets(scope, &profile.include)),
         })
         .collect();
 
@@ -521,11 +605,47 @@ fn is_missing_file(path: &Path) -> bool {
     }
 }
 
+fn resolve_targets(scope: &LoadedScope, entries: &[String]) -> Vec<ContextTarget> {
+    entries
+        .iter()
+        .map(|entry| ContextTarget::parse(&scope.root, entry))
+        .collect()
+}
+
+fn file_paths(targets: &[ContextTarget]) -> Vec<PathBuf> {
+    targets
+        .iter()
+        .filter_map(|target| target.path().map(Path::to_path_buf))
+        .collect()
+}
+
+fn push_unique_paths(target: &mut Vec<PathBuf>, paths: impl IntoIterator<Item = PathBuf>) {
+    for path in paths {
+        if !target.iter().any(|existing| existing == &path) {
+            target.push(path);
+        }
+    }
+}
+
+fn push_unique_entries(
+    target: &mut Vec<ResolvedContextEntry>,
+    entries: impl IntoIterator<Item = ResolvedContextEntry>,
+) {
+    for entry in entries {
+        if !target
+            .iter()
+            .any(|existing| existing.target == entry.target)
+        {
+            target.push(entry);
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
+    use crate::test_support::temp_dir;
     use std::fs;
-    use std::path::{Path, PathBuf};
-    use std::time::{SystemTime, UNIX_EPOCH};
+    use std::path::Path;
 
     use super::{inspect_manifest, resolve_manifest, resolve_stores};
 
@@ -659,19 +779,6 @@ allow_missing = true
         fs::remove_dir_all(root).unwrap();
     }
 
-    fn temp_dir(label: &str) -> PathBuf {
-        let unique = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_nanos();
-        let path = std::env::temp_dir().join(format!("rata-{label}-{unique}"));
-        if path.exists() {
-            fs::remove_dir_all(&path).unwrap();
-        }
-        fs::create_dir_all(&path).unwrap();
-        path
-    }
-
     fn write_config(root: &Path, contents: &str) {
         fs::create_dir_all(root).unwrap();
         fs::write(root.join("rata.toml"), contents).unwrap();
@@ -679,23 +786,4 @@ allow_missing = true
 
     #[allow(dead_code)]
     fn _assert_path(_: &Path) {}
-}
-
-fn push_unique_paths(target: &mut Vec<PathBuf>, paths: impl IntoIterator<Item = PathBuf>) {
-    for path in paths {
-        if !target.iter().any(|existing| existing == &path) {
-            target.push(path);
-        }
-    }
-}
-
-fn push_unique_entries(
-    target: &mut Vec<ResolvedContextEntry>,
-    entries: impl IntoIterator<Item = ResolvedContextEntry>,
-) {
-    for entry in entries {
-        if !target.iter().any(|existing| existing.path == entry.path) {
-            target.push(entry);
-        }
-    }
 }

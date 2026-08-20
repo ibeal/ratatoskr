@@ -15,6 +15,14 @@ pub enum RatatoskrError {
     InvalidRoot(String),
     AlreadyExists(PathBuf),
     UnknownProfiles(Vec<String>),
+    UnknownStore {
+        name: String,
+        available: Vec<String>,
+    },
+    UnresolvedRef {
+        reference: String,
+        candidates: Vec<String>,
+    },
 }
 
 impl Display for RatatoskrError {
@@ -48,6 +56,33 @@ impl Display for RatatoskrError {
             }
             Self::UnknownProfiles(profiles) => {
                 write!(f, "unknown profiles: {}", profiles.join(", "))
+            }
+            // A bare "not found" would send the reader back to guessing paths, which is what refs
+            // exist to stop.
+            Self::UnresolvedRef {
+                reference,
+                candidates,
+            } => {
+                write!(f, "unresolved ref `{reference}`")?;
+                if candidates.is_empty() {
+                    return Ok(());
+                }
+                write!(f, "; did you mean one of:")?;
+                for candidate in candidates {
+                    write!(f, "\n  {candidate}")?;
+                }
+                Ok(())
+            }
+            Self::UnknownStore { name, available } => {
+                write!(
+                    f,
+                    "unknown store `{name}`; available: {}",
+                    if available.is_empty() {
+                        "<none>".to_string()
+                    } else {
+                        available.join(", ")
+                    }
+                )
             }
         }
     }

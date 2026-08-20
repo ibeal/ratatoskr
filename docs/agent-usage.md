@@ -4,7 +4,8 @@ Agents should usually do this:
 
 1. `rata pack` on startup for default context
 2. `rata only profile ...` for task-specific overlays without refetching base context
-3. `rata resolve stores` when they need durable store paths
+3. `rata outline <store>` to see what a store holds before reading any of it
+4. `rata resolve stores` when they need durable store paths
 
 Common commands:
 
@@ -14,9 +15,101 @@ rata only profile build
 rata only profile review
 rata only scope local
 rata only file agents.md
+rata outline
+rata outline memory
+rata outline memory --depth 1
 rata resolve stores
 rata resolve stores --format json
 ```
+
+## Outlines and signatures
+
+`rata outline` computes a store's index from a directory scan at read time. There is no index file,
+so there is nothing to keep in sync — a new `.md` file appears in the next outline with no other
+edit.
+
+Every node gets a one-line **signature** from the first rung of this ladder that produces something:
+
+1. the frontmatter `description:` key
+2. the first sentence of the body after the H1
+3. the H1 heading text
+4. the humanized filename
+
+Frontmatter is optional at every level; files with none still get a usable signature. When the
+signature would only restate the ref, the ref is rendered alone. Use `rata doctor nodes` to see which
+rung each node landed on, which is how thin signatures stay visible without `description:` ever being
+required.
+
+Frontmatter recognizes `description` and `tags`. `tags` is parsed and validated but not yet
+queryable — it is reserved so files written now do not need rewriting later.
+
+## Stepping in instead of loading a file
+
+`outline` tells you what exists; `show` reads exactly one part of it. Prefer this over loading a
+whole file when you need one section:
+
+```text
+rata outline workflow/sdlc.md            # the heading tree, signatures only
+rata show workflow/sdlc.md#PR-summaries  # that section alone
+rata show workflow/sdlc.md#Phases --depth 1
+```
+
+Refs address a file or a heading inside one, with the same syntax at both scales:
+
+```text
+memory:containerized-agents            a store node
+AGENTS.md#Safety                       a heading in a context file
+workflow/sdlc.md#Phases/PR-summaries   a nested heading
+```
+
+`--depth 0` (the default) gives the node's body plus its children's signatures — enough to pick the
+next step without loading it. `--depth N` descends N levels with bodies. A heading segment matches an
+explicit `{#anchor}`, the slugified title, or the title itself, so `#PR-summaries` and
+`#PR summaries` are the same ref. Any ref `outline` prints can be pasted straight into `show`. An
+unresolvable ref lists the closest candidates; read those rather than guessing paths.
+
+Add `--profile <name>` when the file you are addressing is pulled in by a profile rather than the
+base include — otherwise it is not in the ref space and will not resolve.
+
+## Before editing a context file
+
+`rata callers <ref>` lists every node that links to it, with the linking line. Run it before you
+move, rename, or rewrite a context file — there is no other way to find what depends on it.
+
+```text
+rata callers context/PREFERENCES.md
+rata callers 'AGENTS.md#Safety'
+```
+
+One hop, which is what find-references means. Edges come from prose: markdown links, `[label]:`
+definitions, `@path` transclusions, and paths named in code spans. Links inside fenced blocks do not
+count.
+
+`rata graph [--syntax mermaid|dot] [--from <ref>] [--depth N]` renders the graph when a picture
+helps, or `--format json` for the raw nodes and edges. `rata doctor` reports dead links as broken edges.
+
+## Store refs in the pack
+
+A `[context].include` entry ending in a colon — `memory:` — is a store ref, not a path. `rata pack`
+renders that store's outline inline where the entry sits, labelled `## Store Index: memory:` and
+marked `generated:`. There is no file behind it: do not try to open or edit it, and do not treat a
+missing `MEMORY.md`-style index file as a problem. Add a memory and it appears in the next `pack`.
+
+## The one frontmatter invariant
+
+> **Frontmatter can never change whether a file is packed.**
+
+`rata.toml` owns topology and eagerness (which stores exist, where they live, what each profile
+pulls). Frontmatter owns self-description only (`description`, later `tags`) — never location, never
+profile membership.
+
+So: when adding a memory or a decision, write `description:` if the first sentence would not make a
+good signature, and nothing else. Do **not** try to make a file always-on from inside the file;
+that is a `rata.toml` edit. `rata doctor` exits 2 if it finds a frontmatter key that would affect
+eagerness.
+
+Stores, profiles, and tags are one grouping plus two selectors, not three groupings: stores are where
+bytes live, profiles select eagerly for `pack`, tags select lazily for `only` and `outline`.
 
 Use `only` when the agent already has the base pack and just needs an extra slice:
 

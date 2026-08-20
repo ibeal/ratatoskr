@@ -1,3 +1,4 @@
+use std::collections::BTreeMap;
 use std::fmt::{self, Display};
 use std::fs;
 use std::io::ErrorKind;
@@ -8,7 +9,10 @@ use serde::Serialize;
 use crate::cli::{OnlyTarget, ScopeFilter};
 use crate::config::EffectiveSettings;
 use crate::errors::{RatatoskrError, Result};
-use crate::resolve::{self, ContextSource, ResolvedContextEntry, ResolvedManifest};
+use crate::outline;
+use crate::resolve::{
+    self, ContextSource, ContextTarget, ResolvedContextEntry, ResolvedManifest, ResolvedStore,
+};
 
 #[derive(Debug, Serialize)]
 pub struct ContextBundle {
@@ -33,10 +37,14 @@ pub enum BundleSelector {
 
 #[derive(Debug, Serialize)]
 pub struct ContextFileEntry {
-    pub path: PathBuf,
+    #[serde(flatten)]
+    pub target: ContextTarget,
     pub scope_kind: String,
     pub scope_root: PathBuf,
     pub source: ContextSource,
+    /// True when rata synthesized the body instead of reading it from a file. There is no source
+    /// file to open, and editing the output changes nothing.
+    pub generated: bool,
     pub contents: String,
 }
 
@@ -86,7 +94,13 @@ pub fn build_only_bundle(
         OnlyTarget::File { name } => bundle_from_manifest(
             manifest,
             BundleSelector::File { name: name.clone() },
-            |entry| entry.path.file_name().and_then(|value| value.to_str()) == Some(name.as_str()),
+            |entry| {
+                entry
+                    .path()
+                    .and_then(Path::file_name)
+                    .and_then(|value| value.to_str())
+                    == Some(name.as_str())
+            },
         ),
     }
 }
@@ -104,14 +118,27 @@ fn bundle_from_manifest(
             continue;
         }
 
-        let Some(contents) = read_context_contents(&entry.path, allow_missing)? else {
-            continue;
+        let (contents, generated) = match &entry.target {
+            ContextTarget::File { path } => {
+                let Some(contents) = read_context_contents(path, allow_missing)? else {
+                    continue;
+                };
+                (contents, false)
+            }
+            ContextTarget::StoreIndex { store } => {
+                let Some(contents) = render_store_index(&manifest.stores, store)? else {
+                    continue;
+                };
+                (contents, true)
+            }
         };
+
         files.push(ContextFileEntry {
-            path: entry.path.clone(),
+            target: entry.target.clone(),
             scope_kind: entry.scope_kind.clone(),
             scope_root: entry.scope_root.clone(),
             source: entry.source.clone(),
+            generated,
             contents,
         });
     }
@@ -152,16 +179,26 @@ impl Display for ContextBundle {
         writeln!(f)?;
         writeln!(f, "## Source Order")?;
         for (index, file) in self.files.iter().enumerate() {
-            writeln!(f, "{}. {}", index + 1, file.path.display())?;
+            writeln!(f, "{}. {}", index + 1, file.target.label())?;
         }
 
         for file in &self.files {
             writeln!(f)?;
-            writeln!(f, "## File: {}", file.path.display())?;
+            match &file.target {
+                ContextTarget::File { path } => writeln!(f, "## File: {}", path.display())?,
+                ContextTarget::StoreIndex { store } => writeln!(f, "## Store Index: {store}:")?,
+            }
             writeln!(f)?;
             writeln!(f, "scope_kind: {}", file.scope_kind)?;
             writeln!(f, "scope_root: {}", file.scope_root.display())?;
             writeln!(f, "source: {}", source_label(&file.source))?;
+            if file.generated {
+                // Say so plainly: there is no file to open, and editing this changes nothing.
+                writeln!(
+                    f,
+                    "generated: computed by rata from a directory scan; no source file exists"
+                )?;
+            }
             writeln!(f)?;
             write!(f, "{}", file.contents)?;
             if !file.contents.ends_with('\n') {
@@ -171,6 +208,42 @@ impl Display for ContextBundle {
 
         Ok(())
     }
+}
+
+/// Render a store's outline as the body of a context entry.
+///
+/// This is the whole point of a store ref: the index is derived from a directory scan every run, so
+/// there is no file to keep in sync and none to go stale. Output is ordered by ref, so two runs over
+/// an unchanged store are byte-identical.
+fn render_store_index(
+    stores: &BTreeMap<String, ResolvedStore>,
+    store: &str,
+) -> Result<Option<String>> {
+    let Some(outline) = outline::outline_stores(stores, Some(store), None)?.pop() else {
+        return Ok(None);
+    };
+
+    let mut out = String::new();
+    out.push_str(&format!("# {store}\n\n"));
+    if outline.nodes.is_empty() {
+        out.push_str("This store is empty.\n");
+        return Ok(Some(out));
+    }
+    out.push_str(&format!(
+        "{} nodes. Read one with `rata show <ref>`, or its sections with `rata outline <ref>`.\n\n",
+        outline.nodes.len()
+    ));
+    for node in &outline.nodes {
+        if node.redundant {
+            out.push_str(&format!("- `{store}:{}`\n", node.reference));
+        } else {
+            out.push_str(&format!(
+                "- `{store}:{}` — {}\n",
+                node.reference, node.signature
+            ));
+        }
+    }
+    Ok(Some(out))
 }
 
 fn read_context_contents(path: &Path, allow_missing: bool) -> Result<Option<String>> {
@@ -201,5 +274,93 @@ fn source_label(source: &ContextSource) -> String {
     match source {
         ContextSource::Base => "base".to_string(),
         ContextSource::Profile { name } => format!("profile:{name}"),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::fs;
+
+    use super::build_bundle;
+    use crate::test_support::temp_dir;
+
+    #[test]
+    fn a_store_ref_in_context_include_packs_a_synthesized_index() {
+        let root = temp_dir("pack-store-index");
+        let global_root = root.join("global");
+        fs::create_dir_all(global_root.join("memory")).unwrap();
+        fs::write(
+            global_root.join("rata.toml"),
+            r#"
+version = 1
+
+[context]
+include = ["AGENTS.md", "memory:"]
+
+[stores]
+memory = "memory"
+"#,
+        )
+        .unwrap();
+        fs::write(global_root.join("AGENTS.md"), "# Agents\n").unwrap();
+        fs::write(
+            global_root.join("memory/nix.md"),
+            "---\ndescription: Nix patterns worth reusing\n---\n# Nix\n",
+        )
+        .unwrap();
+        fs::write(
+            global_root.join("memory/containers.md"),
+            "# Containers\n\nHow to box an agent safely.\n",
+        )
+        .unwrap();
+
+        let bundle = build_bundle(&root, Some(&global_root), &[]).unwrap();
+
+        // The index sits where the include listed it, and is marked as having no source file.
+        assert_eq!(bundle.files.len(), 2);
+        assert!(!bundle.files[0].generated);
+        assert!(bundle.files[1].generated);
+
+        let rendered = bundle.to_string();
+        assert!(rendered.contains("## Store Index: memory:"));
+        assert!(rendered.contains("generated: computed by rata"));
+        assert!(rendered.contains("`memory:containers` — How to box an agent safely."));
+        assert!(rendered.contains("`memory:nix` — Nix patterns worth reusing"));
+
+        // Deterministic: an unchanged store packs byte-identically.
+        let again = build_bundle(&root, Some(&global_root), &[])
+            .unwrap()
+            .to_string();
+        assert_eq!(rendered, again);
+
+        // A new memory appears with no other edit.
+        fs::write(global_root.join("memory/fresh.md"), "# Fresh\n").unwrap();
+        let grown = build_bundle(&root, Some(&global_root), &[])
+            .unwrap()
+            .to_string();
+        assert!(grown.contains("`memory:fresh`"));
+        assert_ne!(rendered, grown);
+
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn an_unknown_store_ref_is_treated_like_a_missing_file() {
+        let root = temp_dir("pack-unknown-store-ref");
+        let global_root = root.join("global");
+        fs::create_dir_all(&global_root).unwrap();
+        fs::write(
+            global_root.join("rata.toml"),
+            "version = 1\n\n[context]\ninclude = [\"nope:\"]\n",
+        )
+        .unwrap();
+
+        let bundle = build_bundle(&root, Some(&global_root), &[]).unwrap();
+        assert!(bundle.files.is_empty());
+
+        let report = crate::doctor::run_doctor(&root, Some(&global_root), &[]).unwrap();
+        assert!(!report.healthy);
+
+        fs::remove_dir_all(root).unwrap();
     }
 }
