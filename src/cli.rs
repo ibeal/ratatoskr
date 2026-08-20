@@ -83,8 +83,8 @@ pub enum Commands {
         /// Limit the outline to a single store. Defaults to every resolved store.
         store: Option<String>,
         /// Cap how many path segments deep into a store nodes are listed. Defaults to unlimited.
-        #[arg(long)]
-        depth: Option<usize>,
+        #[arg(long, value_parser = clap::value_parser!(u16).range(1..))]
+        depth: Option<u16>,
         /// Resolve relative to this directory instead of the current working directory.
         #[arg(long)]
         cwd: Option<PathBuf>,

@@ -10,7 +10,6 @@ pub enum RatatoskrError {
     ReadConfig(PathBuf, io::Error),
     ParseConfig(PathBuf, toml::de::Error),
     ReadContextFile(PathBuf, io::Error),
-    ReadStoreDir(PathBuf, io::Error),
     WriteRemoteFile(PathBuf, io::Error),
     SerializeJson(serde_json::Error),
     InvalidRoot(String),
@@ -36,13 +35,6 @@ impl Display for RatatoskrError {
                 write!(
                     f,
                     "failed to read context file {}: {source}",
-                    path.display()
-                )
-            }
-            Self::ReadStoreDir(path, source) => {
-                write!(
-                    f,
-                    "failed to read store directory {}: {source}",
                     path.display()
                 )
             }

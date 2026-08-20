@@ -105,8 +105,12 @@ fn run() -> Result<ExitCode> {
             format,
         } => {
             let cwd = cwd.unwrap_or(std::env::current_dir()?);
-            let report =
-                outline::build_outline(&cwd, global_root.as_deref(), store.as_deref(), depth)?;
+            let report = outline::build_outline(
+                &cwd,
+                global_root.as_deref(),
+                store.as_deref(),
+                depth.map(usize::from),
+            )?;
             match format {
                 OutputFormat::Text => print!("{report}"),
                 OutputFormat::Json => println!("{}", serde_json::to_string_pretty(&report)?),

@@ -86,6 +86,7 @@ pub struct DoctorTierCount {
 pub struct DoctorNodeStore {
     pub name: String,
     pub nodes: Vec<Node>,
+    pub scan_issues: Vec<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -239,12 +240,16 @@ pub fn run_nodes_doctor(
     let mut healthy = true;
 
     for store in &outline.stores {
+        // A file rata cannot read is a real problem, not a cosmetic one.
+        if !store.scan_issues.is_empty() {
+            healthy = false;
+        }
         for node in &store.nodes {
             let entry = tier_counts
                 .entry(node.tier.label())
                 .or_insert((node.tier, 0));
             entry.1 += 1;
-            if node.has_eagerness_key() {
+            if node.has_eagerness_key() || node.unreadable.is_some() {
                 healthy = false;
             }
         }
@@ -262,6 +267,7 @@ pub fn run_nodes_doctor(
             .map(|store| DoctorNodeStore {
                 name: store.name,
                 nodes: store.nodes,
+                scan_issues: store.scan_issues,
             })
             .collect(),
     })
@@ -455,6 +461,24 @@ impl Display for DoctorNodesReport {
                 for issue in &node.issues {
                     writeln!(f, "    {}", issue_label(issue))?;
                 }
+                if let Some(reason) = &node.unreadable {
+                    writeln!(f, "    error: unreadable: {reason}")?;
+                }
+                for path in &node.shadowed {
+                    writeln!(f, "    note: shadows {}", path.display())?;
+                }
+            }
+        }
+        if self
+            .stores
+            .iter()
+            .any(|store| !store.scan_issues.is_empty())
+        {
+            writeln!(f, "scan_issues:")?;
+            for store in &self.stores {
+                for issue in &store.scan_issues {
+                    writeln!(f, "  - {}: {issue}", store.name)?;
+                }
             }
         }
         Ok(())
@@ -466,8 +490,8 @@ fn issue_label(issue: &FrontmatterIssue) -> String {
         FrontmatterIssue::EagernessKey { key } => format!(
             "error: frontmatter key `{key}` would affect eagerness; rata.toml owns that, not the file"
         ),
-        FrontmatterIssue::UnknownKey { key } => {
-            format!("warn: unrecognized frontmatter key `{key}`")
+        FrontmatterIssue::MisspelledKey { key, expected } => {
+            format!("warn: frontmatter key `{key}` looks like a typo of `{expected}`")
         }
         FrontmatterIssue::Unterminated => {
             "warn: frontmatter block is never closed; treated as body".to_string()
@@ -641,9 +665,9 @@ fn source_label(source: &ContextSource) -> String {
 
 #[cfg(test)]
 mod tests {
+    use crate::test_support::temp_dir;
     use std::fs;
-    use std::path::{Path, PathBuf};
-    use std::time::{SystemTime, UNIX_EPOCH};
+    use std::path::Path;
 
     use crate::config::StoreComposition;
 
@@ -799,16 +823,6 @@ memory = "memory"
         )));
 
         fs::remove_dir_all(root).unwrap();
-    }
-
-    fn temp_dir(label: &str) -> PathBuf {
-        let unique = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_nanos();
-        let path = std::env::temp_dir().join(format!("rata-{label}-{unique}"));
-        fs::create_dir_all(&path).unwrap();
-        path
     }
 
     fn write_config(root: &Path, contents: &str) {

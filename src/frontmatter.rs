@@ -1,14 +1,29 @@
 use serde::Serialize;
 
-/// Keys the frontmatter schema recognizes. Everything else is reported by `rata doctor`.
+/// Keys the frontmatter schema recognizes.
 pub const KNOWN_KEYS: &[&str] = &["description", "tags"];
 
 /// Keys that would let a file decide whether or when it gets packed. `rata.toml` owns eagerness;
 /// frontmatter owns self-description only, so finding one of these is a hard error.
+///
+/// Deliberately narrow. Store files carry frontmatter written for other tools — ticket templates,
+/// agent skill manifests — and rata does not police conventions it does not own. Common words that
+/// merely *sound* like topology (`path`, `context`, `scope`, `store`, `root`) are excluded, because
+/// failing `doctor` on a foreign key would make the guardrail the problem.
 pub const EAGERNESS_KEYS: &[&str] = &[
-    "always", "context", "eager", "include", "pack", "path", "profile", "profiles", "root",
-    "scope", "store",
+    "always",
+    "eager",
+    "eagerness",
+    "include",
+    "pack",
+    "profile",
+    "profiles",
+    "rata",
 ];
+
+/// How far a key can be from a known key and still be treated as a typo of it rather than a
+/// foreign convention.
+const TYPO_DISTANCE: usize = 2;
 
 #[derive(Clone, Debug, Default, Serialize)]
 pub struct Frontmatter {
@@ -25,8 +40,9 @@ pub struct Frontmatter {
 pub enum FrontmatterIssue {
     /// A key that would change what gets packed. Frontmatter may never do that.
     EagernessKey { key: String },
-    /// Parsed and carried, but not part of the schema.
-    UnknownKey { key: String },
+    /// A near-miss of a schema key — almost certainly a typo, so the value is being silently lost.
+    /// Keys that are nothing like a schema key are ignored: they belong to another tool.
+    MisspelledKey { key: String, expected: String },
     /// An opening `---` with no closing delimiter; the whole file was treated as body.
     Unterminated,
     /// A line inside the block that is neither `key: value` nor a list item.
@@ -127,7 +143,15 @@ fn parse_block(block: &str) -> Frontmatter {
             "description" if !value.is_empty() => {
                 frontmatter.description = Some(unquote(value).to_string());
             }
-            "tags" => frontmatter.tags.extend(parse_inline_tags(value)),
+            // `tags` is reserved, not yet queryable — which is exactly why a shape rata cannot
+            // read must be reported. Silently dropping a value nothing else consumes is the
+            // worst outcome for a key written today for use later.
+            "tags" if !value.is_empty() => match parse_inline_tags(value) {
+                Some(tags) => frontmatter.tags.extend(tags),
+                None => frontmatter.issues.push(FrontmatterIssue::Malformed {
+                    line: line.trim().to_string(),
+                }),
+            },
             _ => {}
         }
 
@@ -142,11 +166,40 @@ fn classify_key(key: &str, issues: &mut Vec<FrontmatterIssue>) {
         issues.push(FrontmatterIssue::EagernessKey {
             key: key.to_string(),
         });
-    } else if !KNOWN_KEYS.contains(&key) {
-        issues.push(FrontmatterIssue::UnknownKey {
+        return;
+    }
+    if KNOWN_KEYS.contains(&key) {
+        return;
+    }
+    if let Some(expected) = KNOWN_KEYS
+        .iter()
+        .find(|known| edit_distance(key, known) <= TYPO_DISTANCE)
+    {
+        issues.push(FrontmatterIssue::MisspelledKey {
             key: key.to_string(),
+            expected: (*expected).to_string(),
         });
     }
+}
+
+/// Levenshtein distance, capped implicitly by the short keys it runs on.
+fn edit_distance(left: &str, right: &str) -> usize {
+    let right: Vec<char> = right.chars().collect();
+    let mut previous: Vec<usize> = (0..=right.len()).collect();
+    let mut current = vec![0; right.len() + 1];
+
+    for (row, left_char) in left.chars().enumerate() {
+        current[0] = row + 1;
+        for (column, right_char) in right.iter().enumerate() {
+            let substitute = previous[column] + usize::from(left_char != *right_char);
+            current[column + 1] = substitute
+                .min(previous[column + 1] + 1)
+                .min(current[column] + 1);
+        }
+        std::mem::swap(&mut previous, &mut current);
+    }
+
+    previous[right.len()]
 }
 
 fn list_item(line: &str) -> Option<&str> {
@@ -167,19 +220,19 @@ fn split_key_value(line: &str) -> Option<(&str, &str)> {
     Some((key, value.trim()))
 }
 
-fn parse_inline_tags(value: &str) -> Vec<String> {
-    let Some(inner) = value
+/// `[a, b]` only. `None` means the value is not a list rata can read.
+fn parse_inline_tags(value: &str) -> Option<Vec<String>> {
+    let inner = value
         .strip_prefix('[')
-        .and_then(|value| value.strip_suffix(']'))
-    else {
-        return Vec::new();
-    };
-    inner
-        .split(',')
-        .map(|tag| unquote(tag.trim()))
-        .filter(|tag| !tag.is_empty())
-        .map(str::to_string)
-        .collect()
+        .and_then(|value| value.strip_suffix(']'))?;
+    Some(
+        inner
+            .split(',')
+            .map(|tag| unquote(tag.trim()))
+            .filter(|tag| !tag.is_empty())
+            .map(str::to_string)
+            .collect(),
+    )
 }
 
 fn unquote(value: &str) -> &str {
@@ -226,16 +279,42 @@ mod tests {
     }
 
     #[test]
-    fn eagerness_keys_are_reported_separately_from_unknown_keys() {
-        let frontmatter = parse("---\nprofile: build\nauthor: ian\n---\nbody\n").0;
+    fn only_eagerness_keys_are_flagged_and_foreign_conventions_are_left_alone() {
+        // `author`, `phase`, `argument-hint` belong to other tools; rata does not police them.
+        let frontmatter =
+            parse("---\nprofile: build\nauthor: ian\nphase: build\nargument-hint: x\n---\nbody\n")
+                .0;
         assert!(super::has_eagerness_key(&frontmatter.issues));
         assert!(matches!(
             frontmatter.issues.as_slice(),
-            [
-                FrontmatterIssue::EagernessKey { key: eager },
-                FrontmatterIssue::UnknownKey { key: unknown },
-            ] if eager == "profile" && unknown == "author"
+            [FrontmatterIssue::EagernessKey { key }] if key == "profile"
         ));
+    }
+
+    #[test]
+    fn a_near_miss_of_a_schema_key_is_flagged_as_a_typo() {
+        let frontmatter = parse("---\ndescriptio: oops\n---\nbody\n").0;
+        assert!(matches!(
+            frontmatter.issues.as_slice(),
+            [FrontmatterIssue::MisspelledKey { key, expected }]
+                if key == "descriptio" && expected == "description"
+        ));
+        // The value really is lost, so flagging it is the point.
+        assert!(frontmatter.description.is_none());
+    }
+
+    #[test]
+    fn a_tags_value_rata_cannot_read_is_reported_rather_than_dropped() {
+        let scalar = parse("---\ntags: nix\n---\nbody\n").0;
+        assert!(scalar.tags.is_empty());
+        assert!(matches!(
+            scalar.issues.as_slice(),
+            [FrontmatterIssue::Malformed { .. }]
+        ));
+
+        // An empty value is an author who has not filled it in yet, not a mistake.
+        let empty = parse("---\ntags:\n---\nbody\n").0;
+        assert!(empty.issues.is_empty());
     }
 
     #[test]

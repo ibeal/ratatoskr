@@ -605,11 +605,47 @@ fn is_missing_file(path: &Path) -> bool {
     }
 }
 
+fn resolve_targets(scope: &LoadedScope, entries: &[String]) -> Vec<ContextTarget> {
+    entries
+        .iter()
+        .map(|entry| ContextTarget::parse(&scope.root, entry))
+        .collect()
+}
+
+fn file_paths(targets: &[ContextTarget]) -> Vec<PathBuf> {
+    targets
+        .iter()
+        .filter_map(|target| target.path().map(Path::to_path_buf))
+        .collect()
+}
+
+fn push_unique_paths(target: &mut Vec<PathBuf>, paths: impl IntoIterator<Item = PathBuf>) {
+    for path in paths {
+        if !target.iter().any(|existing| existing == &path) {
+            target.push(path);
+        }
+    }
+}
+
+fn push_unique_entries(
+    target: &mut Vec<ResolvedContextEntry>,
+    entries: impl IntoIterator<Item = ResolvedContextEntry>,
+) {
+    for entry in entries {
+        if !target
+            .iter()
+            .any(|existing| existing.target == entry.target)
+        {
+            target.push(entry);
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
+    use crate::test_support::temp_dir;
     use std::fs;
-    use std::path::{Path, PathBuf};
-    use std::time::{SystemTime, UNIX_EPOCH};
+    use std::path::Path;
 
     use super::{inspect_manifest, resolve_manifest, resolve_stores};
 
@@ -743,19 +779,6 @@ allow_missing = true
         fs::remove_dir_all(root).unwrap();
     }
 
-    fn temp_dir(label: &str) -> PathBuf {
-        let unique = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_nanos();
-        let path = std::env::temp_dir().join(format!("rata-{label}-{unique}"));
-        if path.exists() {
-            fs::remove_dir_all(&path).unwrap();
-        }
-        fs::create_dir_all(&path).unwrap();
-        path
-    }
-
     fn write_config(root: &Path, contents: &str) {
         fs::create_dir_all(root).unwrap();
         fs::write(root.join("rata.toml"), contents).unwrap();
@@ -763,40 +786,4 @@ allow_missing = true
 
     #[allow(dead_code)]
     fn _assert_path(_: &Path) {}
-}
-
-fn resolve_targets(scope: &LoadedScope, entries: &[String]) -> Vec<ContextTarget> {
-    entries
-        .iter()
-        .map(|entry| ContextTarget::parse(&scope.root, entry))
-        .collect()
-}
-
-fn file_paths(targets: &[ContextTarget]) -> Vec<PathBuf> {
-    targets
-        .iter()
-        .filter_map(|target| target.path().map(Path::to_path_buf))
-        .collect()
-}
-
-fn push_unique_paths(target: &mut Vec<PathBuf>, paths: impl IntoIterator<Item = PathBuf>) {
-    for path in paths {
-        if !target.iter().any(|existing| existing == &path) {
-            target.push(path);
-        }
-    }
-}
-
-fn push_unique_entries(
-    target: &mut Vec<ResolvedContextEntry>,
-    entries: impl IntoIterator<Item = ResolvedContextEntry>,
-) {
-    for entry in entries {
-        if !target
-            .iter()
-            .any(|existing| existing.target == entry.target)
-        {
-            target.push(entry);
-        }
-    }
 }

@@ -104,6 +104,55 @@ frontmatter added anywhere. Adding a new `.md` file makes it appear with no othe
 - 2026-08-19: Store layers are deduped before scanning — a root that is both the global root and a
   local scope (which is exactly `~/dotfiles/agents`) otherwise contributes every layer twice.
 
+### Fresh-eyes review (2026-08-19)
+
+Subagent, fed only the diff + these AC + the review checklist. Findings applied:
+
+**Blocking (both real, both fixed):**
+- **A bad file killed the whole command.** An invalid-UTF-8 file, a `000`-mode directory, or a store
+  path pointing at a file made `rata outline` *and* `rata doctor` exit 1 with nothing rendered —
+  because `doctor` now scans stores. A diagnostic that dies on the thing it diagnoses is useless.
+  Unreadable files are now nodes with an `unreadable` reason; unreadable directories become store
+  `scan_issues`. Neither is fatal; both make `doctor nodes` unhealthy.
+- **Symlinked directories were followed.** `path.is_dir()` follows links, so a self-referential
+  symlink generated ~40 levels of refs and stopped only when the OS hit `ELOOP`; a link to
+  `/nix/store` would have made a default scan unbounded. Now uses `entry.file_type()`, which does
+  not follow, plus a 32-level cap on real nesting.
+
+**Should-fix, applied:**
+- **Tier 2 fired on non-prose.** `tickets:25 — Original:` and `install-helix — Phase: build Updated:
+  2026-07-23` were both worse than the H1 sitting right there. Ordered lists and `+ ` items now
+  count as structure, and a candidate is rejected if it ends in `:`, starts with a `Label:` token,
+  or has fewer than two words. Re-running over the real tickets store turned every one of those
+  into a real title.
+- **`--depth 0` silently returned nothing.** Now rejected by clap (`1..`).
+- **Layer shadowing was invisible.** A ref present in two layers dropped the loser with no trace.
+  `Node.shadowed` records the shadowed paths and `doctor nodes` prints them.
+- **`paths.dedup()` only collapsed adjacent duplicates**, so a repeat separated by an intermediate
+  scope survived and the layer was scanned twice. Now a seen-set.
+- **`tags:` was parsed but not validated** — `tags: nix` (scalar) silently produced `[]`. For a key
+  reserved for later use, silent loss is the worst failure; a shape rata cannot read is now
+  `Malformed`.
+- **Unknown-key warnings covered the whole corpus.** `KNOWN_KEYS` is only `description`/`tags`, so
+  every ticket-template and skill-manifest key drew a warning — and worse, `EAGERNESS_KEYS`
+  contained `path`, `context`, `store`, `scope`, `root`, which are common enough in foreign
+  frontmatter to hard-fail `doctor` on a whole repo. **The guardrail must not become the problem.**
+  Those five words are gone from the list, and the unknown-key warning now fires only on a
+  near-miss of a schema key (edit distance ≤ 2), which is typo detection rather than policing
+  conventions rata does not own. Verified: zero warnings across the real five stores.
+- `.MD` now matches; a filename containing `:` or `#` is unaddressable and reported rather than
+  producing a broken ref; tier naming is `first-sentence` in both text and JSON; the four duplicate
+  `temp_dir` test helpers are consolidated onto `test_support`.
+- Added the missing tests: `strip_ref_prefix`, redundant rendering through `Display`, shadowing,
+  unreadable files, symlink loops, ordered lists, label fragments.
+
+**Confirmed fine by the reviewer:** UTF-8 safety of `truncate` and `cut_at_sentence_end` (verified
+with multi-byte and emoji input), the `is_redundant`/`strip_ref_prefix` composition, determinism,
+and empty/CRLF/no-trailing-newline handling.
+
+**Not acted on:** the observation that this commit bundles two tickets. True, and deliberate — both
+intakes recommended landing them together — and the commit message says so.
+
 ### Open questions
 
 - ~~Does ladder tier 2 (first sentence) need a length cap, or is truncation at render time

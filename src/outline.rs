@@ -25,6 +25,9 @@ pub struct OutlineStore {
     pub name: String,
     pub paths: Vec<PathBuf>,
     pub nodes: Vec<Node>,
+    /// Directories or filenames the scan could not use. Reported, never fatal.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub scan_issues: Vec<String>,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -41,8 +44,16 @@ pub struct Node {
     /// The signature says nothing the ref does not; render the ref alone.
     pub redundant: bool,
     pub tags: Vec<String>,
+    /// Layers that also define this ref but lost to the one above. Recorded so a shadowed file is
+    /// visible rather than mysteriously absent.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub shadowed: Vec<PathBuf>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub issues: Vec<frontmatter::FrontmatterIssue>,
+    /// Why the file could not be read, when it could not. The node still exists so the problem is
+    /// reportable instead of aborting the scan.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub unreadable: Option<String>,
 }
 
 impl Node {
@@ -54,7 +65,7 @@ impl Node {
 
 /// Which rung of the fallback ladder produced a node's signature. Lower is better.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
-#[serde(rename_all = "snake_case")]
+#[serde(rename_all = "kebab-case")]
 pub enum SignatureTier {
     /// Frontmatter `description:`.
     Description,
@@ -107,78 +118,132 @@ pub fn outline_stores(
         });
     }
 
-    resolved
+    let stores = resolved
         .iter()
         .filter(|(name, _)| store.is_none_or(|wanted| wanted == name.as_str()))
         .map(|(name, resolved_store)| {
             // A scope that is both the global root and a local root contributes the same layer
-            // twice; scanning it once is enough.
-            let mut paths = resolved_store.paths.clone();
-            paths.dedup();
-            Ok(OutlineStore {
-                nodes: collect_nodes(name, &paths, depth)?,
+            // twice, and with an intermediate scope the repeats need not be adjacent.
+            let mut seen = BTreeSet::new();
+            let paths = resolved_store
+                .paths
+                .iter()
+                .filter(|path| seen.insert((*path).clone()))
+                .cloned()
+                .collect::<Vec<_>>();
+            let (nodes, scan_issues) = collect_nodes(name, &paths, depth);
+            OutlineStore {
                 name: name.clone(),
                 paths,
-            })
+                nodes,
+                scan_issues,
+            }
         })
-        .collect()
+        .collect::<Vec<_>>();
+
+    Ok(stores)
 }
+
+/// How deep a store scan will follow subdirectories. Symlinks are not followed at all, but a
+/// pathological real directory tree should still terminate.
+const MAX_SCAN_DEPTH: usize = 32;
 
 /// Scan every layer of a store, in resolved precedence order, into nodes addressed by ref.
 ///
 /// The index is computed here rather than read from a file, so there is nothing to keep in sync.
-/// A ref found in more than one layer resolves to the first layer that has it.
-fn collect_nodes(store: &str, paths: &[PathBuf], depth: Option<usize>) -> Result<Vec<Node>> {
-    let mut nodes = Vec::new();
-    let mut seen = BTreeSet::new();
+/// A ref found in more than one layer resolves to the first layer that has it, and the layers it
+/// shadows are recorded rather than dropped.
+///
+/// Nothing here fails the whole scan. An unreadable file or directory becomes an issue on the node
+/// or store that carries it, because the command most likely to meet a broken file is `doctor`, and
+/// a diagnostic that dies on the thing it is meant to diagnose is useless.
+fn collect_nodes(store: &str, paths: &[PathBuf], depth: Option<usize>) -> (Vec<Node>, Vec<String>) {
+    let mut nodes = Vec::<Node>::new();
+    let mut index = BTreeMap::<String, usize>::new();
+    let mut scan_issues = Vec::new();
 
     for root in paths {
         let mut files = Vec::new();
-        collect_markdown_files(root, &mut files)?;
+        collect_markdown_files(root, 0, &mut files, &mut scan_issues);
         files.sort();
 
         for path in files {
             let Some(reference) = node_ref(root, &path) else {
+                scan_issues.push(format!(
+                    "{}: filename is not addressable as a ref",
+                    path.display()
+                ));
                 continue;
             };
             let node_depth = reference.split('/').count();
             if depth.is_some_and(|limit| node_depth > limit) {
                 continue;
             }
-            if !seen.insert(reference.clone()) {
+            // A later layer's copy of the same ref is shadowed, not silently discarded.
+            if let Some(existing) = index.get(&reference) {
+                nodes[*existing].shadowed.push(path);
                 continue;
             }
-            nodes.push(read_node(store, &reference, &path, node_depth)?);
+            index.insert(reference.clone(), nodes.len());
+            nodes.push(read_node(store, &reference, &path, node_depth));
         }
     }
 
     nodes.sort_by(|left, right| left.reference.cmp(&right.reference));
-    Ok(nodes)
+    (nodes, scan_issues)
 }
 
-fn collect_markdown_files(root: &Path, files: &mut Vec<PathBuf>) -> Result<()> {
+fn collect_markdown_files(
+    root: &Path,
+    depth: usize,
+    files: &mut Vec<PathBuf>,
+    issues: &mut Vec<String>,
+) {
+    if depth >= MAX_SCAN_DEPTH {
+        issues.push(format!(
+            "{}: stopped scanning at {MAX_SCAN_DEPTH} levels deep",
+            root.display()
+        ));
+        return;
+    }
+
     let entries = match fs::read_dir(root) {
         Ok(entries) => entries,
         // A declared store layer that does not exist yet simply contributes nothing.
-        Err(source) if source.kind() == std::io::ErrorKind::NotFound => return Ok(()),
-        Err(source) => return Err(RatatoskrError::ReadStoreDir(root.to_path_buf(), source)),
+        Err(source) if source.kind() == std::io::ErrorKind::NotFound => return,
+        Err(source) => {
+            issues.push(format!("{}: {source}", root.display()));
+            return;
+        }
     };
 
     for entry in entries {
-        let entry =
-            entry.map_err(|source| RatatoskrError::ReadStoreDir(root.to_path_buf(), source))?;
+        let entry = match entry {
+            Ok(entry) => entry,
+            Err(source) => {
+                issues.push(format!("{}: {source}", root.display()));
+                continue;
+            }
+        };
         let path = entry.path();
         if is_hidden(&path) {
             continue;
         }
-        if path.is_dir() {
-            collect_markdown_files(&path, files)?;
-        } else if path.extension().is_some_and(|ext| ext == "md") {
+        // `file_type` does not follow symlinks, so a symlinked directory is never descended into.
+        // A self-referential link would otherwise generate refs until the OS ran out of levels.
+        let file_type = match entry.file_type() {
+            Ok(file_type) => file_type,
+            Err(source) => {
+                issues.push(format!("{}: {source}", path.display()));
+                continue;
+            }
+        };
+        if file_type.is_dir() {
+            collect_markdown_files(&path, depth + 1, files, issues);
+        } else if file_type.is_file() && is_markdown(&path) {
             files.push(path);
         }
     }
-
-    Ok(())
 }
 
 fn is_hidden(path: &Path) -> bool {
@@ -187,20 +252,45 @@ fn is_hidden(path: &Path) -> bool {
         .is_some_and(|name| name.starts_with('.'))
 }
 
+fn is_markdown(path: &Path) -> bool {
+    path.extension()
+        .and_then(|ext| ext.to_str())
+        .is_some_and(|ext| ext.eq_ignore_ascii_case("md"))
+}
+
+/// A ref must round-trip through the `store:ref` and `ref#heading` addressing, so a filename
+/// containing the separators has no valid ref.
 fn node_ref(root: &Path, path: &Path) -> Option<String> {
     let relative = path.strip_prefix(root).ok()?;
     let stem = relative.with_extension("");
     let text = stem.to_str()?.replace(std::path::MAIN_SEPARATOR, "/");
-    (!text.is_empty()).then_some(text)
+    let addressable = !text.is_empty() && !text.contains(':') && !text.contains('#');
+    addressable.then_some(text)
 }
 
-fn read_node(store: &str, reference: &str, path: &Path, depth: usize) -> Result<Node> {
-    let contents = fs::read_to_string(path)
-        .map_err(|source| RatatoskrError::ReadContextFile(path.to_path_buf(), source))?;
+fn read_node(store: &str, reference: &str, path: &Path, depth: usize) -> Node {
+    let contents = match fs::read_to_string(path) {
+        Ok(contents) => contents,
+        Err(source) => {
+            return Node {
+                reference: reference.to_string(),
+                store: store.to_string(),
+                path: path.to_path_buf(),
+                depth,
+                signature: format!("<unreadable: {source}>"),
+                tier: SignatureTier::Filename,
+                redundant: false,
+                tags: Vec::new(),
+                shadowed: Vec::new(),
+                issues: Vec::new(),
+                unreadable: Some(source.to_string()),
+            };
+        }
+    };
     let (front, body) = frontmatter::parse(&contents);
     let (signature, tier) = resolve_signature(&front, body, reference);
 
-    Ok(Node {
+    Node {
         reference: reference.to_string(),
         store: store.to_string(),
         path: path.to_path_buf(),
@@ -209,8 +299,10 @@ fn read_node(store: &str, reference: &str, path: &Path, depth: usize) -> Result<
         signature,
         tier,
         tags: front.tags.clone(),
+        shadowed: Vec::new(),
         issues: front.issues,
-    })
+        unreadable: None,
+    }
 }
 
 /// The fallback ladder: `description:` → first sentence after the H1 → the H1 → the filename.
@@ -313,7 +405,18 @@ fn first_sentence(body: &str, skip_heading: bool) -> Option<String> {
 
     let sentence = clean_inline(&paragraph);
     let sentence = cut_at_sentence_end(&sentence);
-    (!sentence.is_empty()).then(|| sentence.to_string())
+    is_useful_sentence(sentence).then(|| sentence.to_string())
+}
+
+/// A candidate has to actually describe something. A bold lead-in label (`**Original:**`) or a
+/// metadata line reduces to `Original:`, which is worse than the H1 the ladder would otherwise
+/// fall through to — so a fragment that only labels is rejected.
+fn is_useful_sentence(sentence: &str) -> bool {
+    let mut words = sentence.split_whitespace();
+    // A leading `Phase:` / `Original:` is a metadata label; what follows is a field value, not a
+    // description of the file.
+    let labelled = words.next().is_some_and(|first| first.ends_with(':'));
+    !sentence.is_empty() && !sentence.ends_with(':') && !labelled && words.next().is_some()
 }
 
 fn is_structural(line: &str) -> bool {
@@ -322,9 +425,20 @@ fn is_structural(line: &str) -> bool {
         || line.starts_with('|')
         || line.starts_with("- ")
         || line.starts_with("* ")
+        || line.starts_with("+ ")
         || line.starts_with("<!--")
         || line.starts_with("@")
+        || is_ordered_item(line)
         || line.chars().all(|c| c == '-' || c == '=')
+}
+
+/// `1. item` / `2) item` — a list, not a paragraph.
+fn is_ordered_item(line: &str) -> bool {
+    let digits = line.chars().take_while(char::is_ascii_digit).count();
+    digits > 0
+        && line[digits..]
+            .strip_prefix(['.', ')'])
+            .is_some_and(|rest| rest.starts_with(' '))
 }
 
 fn cut_at_sentence_end(text: &str) -> &str {
@@ -590,6 +704,136 @@ mod tests {
             .map(|node| node.reference.as_str())
             .collect::<Vec<_>>();
         assert_eq!(refs, vec!["containerized-agents", "fresh"]);
+
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn a_heading_that_restates_the_ref_keeps_only_the_informative_half() {
+        let (value, tier) = signature(
+            "# ask-2026-07-17-rebuild-sync — Rebuild safe two-way sync baselines\n",
+            "ask-2026-07-17-rebuild-sync",
+        );
+        assert_eq!(value, "Rebuild safe two-way sync baselines");
+        assert_eq!(tier, SignatureTier::Heading);
+    }
+
+    #[test]
+    fn a_label_fragment_is_rejected_in_favour_of_the_heading() {
+        // `**Original:**` is a lead-in label, not a description; the H1 is strictly better.
+        let (value, tier) = signature(
+            "# 25 — Add an offset param\n\n**Original:**\n\nSome quoted ask.\n",
+            "25",
+        );
+        assert_eq!(value, "Add an offset param");
+        assert_eq!(tier, SignatureTier::Heading);
+    }
+
+    #[test]
+    fn ordered_lists_are_structure_too() {
+        let (value, tier) = signature("# Phases\n\n1. do this\n2. then this\n", "phases");
+        assert_eq!(value, "Phases");
+        assert_eq!(tier, SignatureTier::Heading);
+    }
+
+    #[test]
+    fn a_redundant_signature_renders_as_the_ref_alone() {
+        let root = crate::test_support::temp_dir("outline-redundant");
+        let global_root = root.join("global");
+        std::fs::create_dir_all(global_root.join("memory")).unwrap();
+        std::fs::write(
+            global_root.join("rata.toml"),
+            "version = 1\n\n[stores]\nmemory = \"memory\"\n",
+        )
+        .unwrap();
+        std::fs::write(global_root.join("memory/foo-bar.md"), "# Foo bar\n").unwrap();
+
+        let rendered = build_outline(&root, Some(&global_root), Some("memory"), None)
+            .unwrap()
+            .to_string();
+        assert!(rendered.contains("- foo-bar\n"));
+        assert!(!rendered.contains("foo-bar — Foo bar"));
+
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn a_shadowed_layer_is_recorded_not_dropped() {
+        let root = crate::test_support::temp_dir("outline-shadow");
+        let global_root = root.join("global");
+        let project = root.join("project");
+        std::fs::create_dir_all(global_root.join("memory")).unwrap();
+        std::fs::create_dir_all(project.join(".rata/memory")).unwrap();
+        std::fs::write(
+            global_root.join("rata.toml"),
+            "version = 1\n\n[stores]\nmemory = { path = \"memory\", composition = \"global-first\" }\n",
+        )
+        .unwrap();
+        std::fs::write(
+            project.join("rata.toml"),
+            "version = 1\n\n[stores]\nmemory = { path = \".rata/memory\" }\n",
+        )
+        .unwrap();
+        std::fs::write(global_root.join("memory/note.md"), "# Global note\n").unwrap();
+        std::fs::write(project.join(".rata/memory/note.md"), "# Local note\n").unwrap();
+
+        let report = build_outline(&project, Some(&global_root), Some("memory"), None).unwrap();
+        let node = &report.stores[0].nodes[0];
+        assert_eq!(node.path, global_root.join("memory/note.md"));
+        assert_eq!(node.shadowed, vec![project.join(".rata/memory/note.md")]);
+
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn an_unreadable_file_becomes_a_reportable_node_instead_of_aborting_the_scan() {
+        let root = crate::test_support::temp_dir("outline-unreadable");
+        let global_root = root.join("global");
+        std::fs::create_dir_all(global_root.join("memory")).unwrap();
+        std::fs::write(
+            global_root.join("rata.toml"),
+            "version = 1\n\n[stores]\nmemory = \"memory\"\n",
+        )
+        .unwrap();
+        std::fs::write(
+            global_root.join("memory/good.md"),
+            "# Good\n\nReadable prose.\n",
+        )
+        .unwrap();
+        // Invalid UTF-8 is the realistic case: a stray binary or latin-1 file in a store.
+        std::fs::write(global_root.join("memory/bad.md"), [0xff, 0xfe, 0x00]).unwrap();
+
+        let report = build_outline(&root, Some(&global_root), Some("memory"), None).unwrap();
+        let nodes = &report.stores[0].nodes;
+        assert_eq!(nodes.len(), 2, "the good file is still listed");
+        assert!(nodes[0].unreadable.is_some());
+        assert!(nodes[1].unreadable.is_none());
+
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn a_symlinked_directory_is_not_descended_into() {
+        let root = crate::test_support::temp_dir("outline-symlink");
+        let global_root = root.join("global");
+        std::fs::create_dir_all(global_root.join("memory")).unwrap();
+        std::fs::write(
+            global_root.join("rata.toml"),
+            "version = 1\n\n[stores]\nmemory = \"memory\"\n",
+        )
+        .unwrap();
+        std::fs::write(global_root.join("memory/real.md"), "# Real\n").unwrap();
+        // A link back to the store would otherwise recurse until the OS refused.
+        std::os::unix::fs::symlink(global_root.join("memory"), global_root.join("memory/loop"))
+            .unwrap();
+
+        let report = build_outline(&root, Some(&global_root), Some("memory"), None).unwrap();
+        let refs = report.stores[0]
+            .nodes
+            .iter()
+            .map(|node| node.reference.as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(refs, vec!["real"]);
 
         std::fs::remove_dir_all(root).unwrap();
     }
